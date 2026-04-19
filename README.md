@@ -124,6 +124,11 @@ scheduled times inside `[start_hour, end_hour)`. It divides the active window
 into equal segments, picks one random timestamp per segment, and enforces
 `min_spacing_minutes`.
 
+For each generated poke, `poke` selects one entry from `[messages].items` at
+random. Selection is with replacement: selected messages are not removed from
+the pool, the same message may appear multiple times in one day, and
+`pokes_per_day` may exceed the number of configured messages.
+
 If multiple pokes are overdue when a tick runs, `poke` sends the earliest due
 poke and drops the other missed overdue pokes after the send succeeds. Future
 pokes stay pending.
