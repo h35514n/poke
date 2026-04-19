@@ -1,0 +1,18 @@
+[delivery]
+destination = "+15555555555"
+imsg_path = "/opt/homebrew/bin/imsg"
+
+[schedule]
+start_hour = 9
+end_hour = 21
+pokes_per_day = 6
+min_spacing_minutes = 45
+
+[messages]
+items = [
+  "Update openclaw context.",
+  "Drink water.",
+  "Stand up and stretch.",
+  "Walk around for two minutes.",
+  "Do ten air squats."
+]
