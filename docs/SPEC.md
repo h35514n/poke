@@ -31,7 +31,7 @@ Non-functional requirements:
 Deliverables:
 
 1. A Rust crate producing a single binary `poke`.
-2. An installable LaunchAgent plist template `com.example.poke.plist` with token substitution for the binary path, username/home path, and log locations.
+2. An installable LaunchAgent plist template whose installed filename and `Label` use `com.USER.poke`, where `USER` is the current user, with token substitution for the binary path, username/home path, and log locations.
 3. A sample `config.toml`.
 4. A `README.md` with install, load/unload, debug, and usage instructions.
 5. A small test suite covering schedule generation, day rollover, active-window logic, and due-poke dequeue behavior.
@@ -47,7 +47,7 @@ CLI surface:
 - `poke regen`
   Force-regenerate today’s schedule and overwrite pending pokes for today.
 - `poke install-agent`
-  Write the LaunchAgent plist to `~/Library/LaunchAgents/com.example.poke.plist`, filling in the current binary path and state log paths.
+  Write the LaunchAgent plist to `~/Library/LaunchAgents/com.USER.poke.plist`, where `USER` is the current user, filling in the current binary path and state log paths.
 - `poke uninstall-agent`
   Remove the plist. Do not automatically unload it; print the needed `launchctl` command.
 - `poke print-plist`
@@ -163,7 +163,7 @@ Subprocess behavior:
 
 LaunchAgent requirements:
 
-- Install under `~/Library/LaunchAgents/com.example.poke.plist`.
+- Install under `~/Library/LaunchAgents/com.USER.poke.plist`, where `USER` is the current user.
 - Use `ProgramArguments` with the absolute path to the `poke` binary and the `tick` subcommand.
 - Use `StartInterval = 300`.
 - Use `RunAtLoad = true`.
@@ -179,7 +179,7 @@ Plist template shape:
 <plist version="1.0">
   <dict>
     <key>Label</key>
-    <string>com.example.poke</string>
+    <string>{{BUNDLE_ID}}</string>
 
     <key>ProgramArguments</key>
     <array>

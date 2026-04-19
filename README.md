@@ -107,13 +107,13 @@ LaunchAgent Management
 Loading:
 
 ```sh
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.poke.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.$USER.poke.plist
 ```
 
 Unloading:
 
 ```sh
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.example.poke.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.$USER.poke.plist
 ```
 
 Behavior
@@ -141,7 +141,7 @@ Debug
 Check launchd state:
 
 ```sh
-launchctl print gui/$(id -u)/com.example.poke
+launchctl print gui/$(id -u)/com.$USER.poke
 ```
 
 Read logs:
