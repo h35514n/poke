@@ -10,9 +10,8 @@ min_spacing_minutes = 45
 
 [messages]
 items = [
-  "Update openclaw context.",
-  "Drink water.",
+  "Drink some water.",
   "Stand up and stretch.",
-  "Walk around for two minutes.",
-  "Do ten air squats."
+  "Take a walk.",
+  "Contemplate the orb."
 ]
