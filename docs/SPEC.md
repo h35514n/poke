@@ -92,7 +92,7 @@ Config semantics:
 - `start_hour` and `end_hour` are local-time wall-clock hours in 24-hour format.
 - Treat the active window as `[start_hour, end_hour)`.
 - Reject invalid configs with clear errors: `end_hour <= start_hour`, `pokes_per_day <= 0`, empty `messages.items`, invalid phone number string empty, negative spacing, nonexistent `imsg_path`.
-- It is acceptable for `pokes_per_day` to exceed the number of unique messages; messages may repeat.
+- It is acceptable for `pokes_per_day` to exceed the number of unique messages; the message list cycles after exhaustion. When `pokes_per_day` is at least as large as the number of messages, every message is guaranteed to appear at least once each day.
 - Minimum spacing is a hard constraint. If it cannot be satisfied for the configured window, return a config error explaining that the window is too small for the requested density.
 
 State schema in `state.json`:
@@ -150,7 +150,7 @@ Schedule generation algorithm:
 - Sort sampled times.
 - Enforce `min_spacing_minutes`; if any pair violates spacing, retry generation up to a bounded number of attempts.
 - If no valid schedule is found, return a deterministic error saying the configured density is infeasible.
-- Assign each time a message by random selection from `messages.items`.
+- Assign messages using a shuffle-and-cycle strategy: shuffle `messages.items` once, then assign to poke slots in order, cycling back to the start if `pokes_per_day` exceeds the message count.
 - Persist the resulting queue sorted by time.
 
 Subprocess behavior:
@@ -235,6 +235,7 @@ Testing requirements:
 - Unit test no-op before first due time.
 - Unit test failed send preserves pending queue.
 - Unit test `show` output does not mutate state.
+- Unit test all messages appear when `pokes_per_day` is at least as large as the message count.
 
 Implementation notes for Codex:
 

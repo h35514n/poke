@@ -124,10 +124,12 @@ scheduled times inside `[start_hour, end_hour)`. It divides the active window
 into equal segments, picks one random timestamp per segment, and enforces
 `min_spacing_minutes`.
 
-For each generated poke, `poke` selects one entry from `[messages].items` at
-random. Selection is with replacement: selected messages are not removed from
-the pool, the same message may appear multiple times in one day, and
-`pokes_per_day` may exceed the number of configured messages.
+For each generated poke, `poke` assigns one entry from `[messages].items`
+using a shuffle-and-cycle strategy: the message list is shuffled once per day,
+then assigned to poke slots in order, cycling back to the start if
+`pokes_per_day` exceeds the number of messages. When `pokes_per_day` is at
+least as large as the number of messages, every message is guaranteed to appear
+at least once each day.
 
 If multiple pokes are overdue when a tick runs, `poke` sends the earliest due
 poke and drops the other missed overdue pokes after the send succeeds. Future

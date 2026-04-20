@@ -51,13 +51,14 @@ fn generate_in_interval<R: Rng + ?Sized>(
         }
         times.sort();
         if respects_min_spacing(&times, min_spacing) {
+            let messages = select_messages(&config.messages.items, count, rng);
             return Ok(times
                 .into_iter()
                 .enumerate()
                 .map(|(index, at)| PendingPoke {
                     id: format!("{date}-{index}"),
                     at,
-                    message: random_message(&config.messages.items, rng),
+                    message: messages[index].clone(),
                 })
                 .collect());
         }
@@ -117,9 +118,11 @@ fn respects_min_spacing(times: &[DateTime<FixedOffset>], min_spacing: Duration) 
         .all(|pair| pair[1] - pair[0] >= min_spacing)
 }
 
-fn random_message<R: Rng + ?Sized>(messages: &[String], rng: &mut R) -> String {
-    let index = rng.gen_range(0..messages.len());
-    messages[index].clone()
+fn select_messages<R: Rng + ?Sized>(messages: &[String], count: usize, rng: &mut R) -> Vec<String> {
+    use rand::seq::SliceRandom;
+    let mut indices: Vec<usize> = (0..messages.len()).collect();
+    indices.shuffle(rng);
+    (0..count).map(|i| messages[indices[i % indices.len()]].clone()).collect()
 }
 
 #[cfg(test)]
@@ -171,6 +174,25 @@ mod tests {
         .unwrap();
         for pair in pokes.windows(2) {
             assert!(pair[1].at - pair[0].at >= Duration::minutes(90));
+        }
+    }
+
+    #[test]
+    fn all_messages_appear_when_pokes_exceed_message_count() {
+        let config = default_config();
+        // default: 5 messages, 6 pokes/day
+        assert!(config.schedule.pokes_per_day >= config.messages.items.len());
+        let mut rng = StdRng::seed_from_u64(42);
+        let pokes = generate_for_date(
+            &config,
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+        let selected: std::collections::HashSet<&str> =
+            pokes.iter().map(|p| p.message.as_str()).collect();
+        for msg in &config.messages.items {
+            assert!(selected.contains(msg.as_str()), "message not selected: {msg}");
         }
     }
 
