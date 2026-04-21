@@ -4,19 +4,11 @@
 
 Build `poke`, a compact Rust CLI for macOS that runs as a per-user LaunchAgent and sends scheduled iMessage nudges via `imsg`.
 
-The authoritative product and implementation requirements live in `docs/SPEC.md`. If this file and `SPEC.md` conflict, follow `SPEC.md` on product behavior and this file on repo workflow.
+The product contract lives in `docs/SPEC.md`. If this file and `SPEC.md` conflict, follow `SPEC.md` for behavior and this file for repo workflow.
 
 ## Scope
 
-Implement only the `poke` utility and its supporting files:
-
-- Rust binary crate
-- LaunchAgent plist template
-- sample config
-- README
-- tests
-
-Do not add unrelated tooling, services, or infrastructure.
+Implement only the `poke` CLI, LaunchAgent template, sample config, README, and tests. Do not add unrelated tooling, services, or infrastructure.
 
 ## Non-goals
 
@@ -41,7 +33,7 @@ This tool should remain a short-lived CLI invoked by launchd every 5 minutes.
 - Use atomic state writes.
 - Use an interprocess lock during `tick`.
 - Use timezone-aware local wall-clock time.
-- Invoke `imsg` directly as a subprocess, not through a shell.
+- Invoke `imsg send --to DESTINATION --text MESSAGE` directly as a subprocess, not through a shell.
 - Use absolute paths where launchd interaction is involved.
 
 ## Source of truth
@@ -57,6 +49,7 @@ Key requirements that must remain true:
 - one daily generated schedule per local day
 - at most one message sent per tick
 - failed sends do not dequeue pending pokes
+- on successful overdue sends, send the earliest due poke and drop any other missed overdue pokes
 - pending queue is replaced on new-day regeneration
 - LaunchAgent uses `ProgramArguments`, `StartInterval=300`, `RunAtLoad=true`
 - no `KeepAlive`
@@ -101,7 +94,10 @@ Add or maintain tests for:
 - day rollover behavior
 - due-poke detection
 - dequeue on successful send
+- dropping other missed overdue pokes only after a successful send
 - preservation of pending queue on failed send
+- `show` does not mutate state
+- every configured message appears when `pokes_per_day >= messages.len()`
 
 Run tests before considering a task complete.
 
