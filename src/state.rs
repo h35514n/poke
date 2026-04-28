@@ -1,3 +1,4 @@
+use crate::config::DEFAULT_MESSAGE_CATEGORY;
 use anyhow::Context;
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use fs2::FileExt;
@@ -11,6 +12,8 @@ pub struct State {
     pub last_schedule_date: Option<NaiveDate>,
     pub pending: Vec<PendingPoke>,
     pub sent: Vec<SentPoke>,
+    #[serde(default)]
+    pub recent_history: Vec<RecentMessage>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -18,6 +21,8 @@ pub struct PendingPoke {
     pub id: String,
     pub at: DateTime<FixedOffset>,
     pub message: String,
+    #[serde(default = "default_category")]
+    pub category: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -26,6 +31,24 @@ pub struct SentPoke {
     pub scheduled_at: DateTime<FixedOffset>,
     pub sent_at: DateTime<FixedOffset>,
     pub message: String,
+    #[serde(default = "default_category")]
+    pub category: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecentMessage {
+    pub message: String,
+    #[serde(default = "default_category")]
+    pub category: String,
+}
+
+impl RecentMessage {
+    pub fn new(message: impl Into<String>, category: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            category: category.into(),
+        }
+    }
 }
 
 pub struct StateLock {
@@ -105,4 +128,47 @@ fn temp_path(path: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .unwrap_or("state.json");
     path.with_file_name(format!(".{file_name}.tmp"))
+}
+
+fn default_category() -> String {
+    DEFAULT_MESSAGE_CATEGORY.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn legacy_state_without_history_or_categories_loads() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("state.json");
+        fs::write(
+            &path,
+            r#"{
+  "last_schedule_date": "2026-04-19",
+  "pending": [
+    {
+      "id": "2026-04-19-0",
+      "at": "2026-04-19T09:35:00-04:00",
+      "message": "Drink water."
+    }
+  ],
+  "sent": [
+    {
+      "id": "2026-04-19-0",
+      "scheduled_at": "2026-04-19T09:35:00-04:00",
+      "sent_at": "2026-04-19T09:36:02-04:00",
+      "message": "Drink water."
+    }
+  ]
+}"#,
+        )
+        .unwrap();
+
+        let state = load_state(&path).unwrap();
+        assert_eq!(state.pending[0].category, DEFAULT_MESSAGE_CATEGORY);
+        assert_eq!(state.sent[0].category, DEFAULT_MESSAGE_CATEGORY);
+        assert!(state.recent_history.is_empty());
+    }
 }

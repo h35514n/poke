@@ -1,7 +1,9 @@
 use anyhow::{Context, bail};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+pub const DEFAULT_MESSAGE_CATEGORY: &str = "default";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {
@@ -26,7 +28,49 @@ pub struct ScheduleConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MessagesConfig {
-    pub items: Vec<String>,
+    pub items: Vec<MessageTemplate>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct MessageTemplate {
+    pub text: String,
+    pub category: String,
+}
+
+impl MessageTemplate {
+    pub fn new(text: impl Into<String>, category: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            category: category.into(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MessageTemplate {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum RawMessageTemplate {
+            Text(String),
+            Structured {
+                text: String,
+                #[serde(default)]
+                category: Option<String>,
+            },
+        }
+
+        let raw = RawMessageTemplate::deserialize(deserializer)?;
+        Ok(match raw {
+            RawMessageTemplate::Text(text) => MessageTemplate::new(text, DEFAULT_MESSAGE_CATEGORY),
+            RawMessageTemplate::Structured { text, category } => MessageTemplate::new(
+                text,
+                category.unwrap_or_else(|| DEFAULT_MESSAGE_CATEGORY.to_string()),
+            ),
+        })
+    }
 }
 
 impl Config {
@@ -74,9 +118,17 @@ impl Config {
             .messages
             .items
             .iter()
-            .any(|item| item.trim().is_empty())
+            .any(|item| item.text.trim().is_empty())
         {
             bail!("messages.items must not contain empty messages");
+        }
+        if self
+            .messages
+            .items
+            .iter()
+            .any(|item| item.category.trim().is_empty())
+        {
+            bail!("messages.items categories must not be empty");
         }
         validate_density(&self.schedule)?;
         Ok(())
@@ -115,11 +167,11 @@ pub fn default_config() -> Config {
         },
         messages: MessagesConfig {
             items: vec![
-                "Update openclaw context.".to_string(),
-                "Drink water.".to_string(),
-                "Stand up and stretch.".to_string(),
-                "Walk around for two minutes.".to_string(),
-                "Do ten air squats.".to_string(),
+                MessageTemplate::new("Update openclaw context.", "focus"),
+                MessageTemplate::new("Drink water.", "hydration"),
+                MessageTemplate::new("Stand up and stretch.", "mobility"),
+                MessageTemplate::new("Walk around for two minutes.", "movement"),
+                MessageTemplate::new("Do ten air squats.", "movement"),
             ],
         },
     }
@@ -146,9 +198,61 @@ pub fn write_default_config_if_absent(path: &Path) -> anyhow::Result<()> {
 mod tests {
     use super::*;
 
+    fn base_toml(messages: &str) -> String {
+        format!(
+            r#"
+[delivery]
+destination = "+15555555555"
+imsg_path = "/tmp/imsg"
+
+[schedule]
+start_hour = 9
+end_hour = 21
+pokes_per_day = 6
+min_spacing_minutes = 45
+
+[messages]
+items = {messages}
+"#
+        )
+    }
+
     #[test]
     fn default_config_is_valid_without_existing_imsg_for_init() {
         default_config().validate(false).unwrap();
+    }
+
+    #[test]
+    fn string_only_messages_default_to_default_category() {
+        let config: Config =
+            toml::from_str(&base_toml(r#"["Drink water.", "Stand up and stretch."]"#)).unwrap();
+        assert_eq!(
+            config.messages.items,
+            vec![
+                MessageTemplate::new("Drink water.", DEFAULT_MESSAGE_CATEGORY),
+                MessageTemplate::new("Stand up and stretch.", DEFAULT_MESSAGE_CATEGORY),
+            ]
+        );
+    }
+
+    #[test]
+    fn mixed_message_shapes_parse_and_normalize() {
+        let config: Config = toml::from_str(&base_toml(
+            r#"[
+  "Drink water.",
+  { text = "Stand up and stretch.", category = "movement" },
+  { text = "Review notes." }
+]"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            config.messages.items,
+            vec![
+                MessageTemplate::new("Drink water.", DEFAULT_MESSAGE_CATEGORY),
+                MessageTemplate::new("Stand up and stretch.", "movement"),
+                MessageTemplate::new("Review notes.", DEFAULT_MESSAGE_CATEGORY),
+            ]
+        );
     }
 
     #[test]
@@ -160,5 +264,13 @@ mod tests {
         config.schedule.min_spacing_minutes = 45;
         let err = config.validate(false).unwrap_err().to_string();
         assert!(err.contains("too small"));
+    }
+
+    #[test]
+    fn empty_message_category_is_rejected() {
+        let mut config = default_config();
+        config.messages.items = vec![MessageTemplate::new("Drink water.", "")];
+        let err = config.validate(false).unwrap_err().to_string();
+        assert!(err.contains("categories must not be empty"));
     }
 }

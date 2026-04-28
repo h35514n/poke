@@ -49,11 +49,11 @@ min_spacing_minutes = 45
 
 [messages]
 items = [
-  "Update openclaw context.",
-  "Drink water.",
-  "Stand up and stretch.",
-  "Walk around for two minutes.",
-  "Do ten air squats."
+  { text = "Update openclaw context.", category = "focus" },
+  { text = "Drink water.", category = "hydration" },
+  { text = "Stand up and stretch.", category = "mobility" },
+  { text = "Walk around for two minutes.", category = "movement" },
+  { text = "Do ten air squats.", category = "movement" }
 ]
 ```
 
@@ -67,6 +67,9 @@ Validation:
 - `schedule.pokes_per_day` must be greater than zero.
 - `schedule.min_spacing_minutes` must not be negative.
 - `messages.items` must contain at least one non-empty message.
+- Each message item may be a plain string or an inline table with `text` and optional `category`.
+- Plain string messages default to category `"default"`.
+- Message categories must not be empty.
 - The configured active window must be large enough for the requested poke count and minimum spacing.
 
 The active window is local wall-clock time `[start_hour, end_hour)`.
@@ -80,7 +83,8 @@ The active window is local wall-clock time `[start_hour, end_hour)`.
     {
       "id": "2026-04-19-0",
       "at": "2026-04-19T09:35:00-04:00",
-      "message": "Drink water."
+      "message": "Drink water.",
+      "category": "hydration"
     }
   ],
   "sent": [
@@ -88,7 +92,14 @@ The active window is local wall-clock time `[start_hour, end_hour)`.
       "id": "2026-04-19-0",
       "scheduled_at": "2026-04-19T09:35:00-04:00",
       "sent_at": "2026-04-19T09:36:02-04:00",
-      "message": "Drink water."
+      "message": "Drink water.",
+      "category": "hydration"
+    }
+  ],
+  "recent_history": [
+    {
+      "message": "Drink water.",
+      "category": "hydration"
     }
   ]
 }
@@ -99,6 +110,7 @@ State rules:
 - `last_schedule_date` is the local date for which `pending` was generated.
 - `pending` is sorted ascending by `at`.
 - `sent` only needs to retain the current day.
+- `recent_history` retains a bounded recent history of successful sends across day boundaries.
 - On new-day generation, replace `pending` and clear `sent`.
 - Poke IDs are deterministic within the day: `YYYY-MM-DD-index`.
 - State writes are atomic: write temp file, fsync, rename, then best-effort fsync the parent directory.
@@ -112,7 +124,11 @@ State rules:
 - Sample one timestamp uniformly within each segment.
 - Sort timestamps and enforce `min_spacing_minutes`.
 - Retry boundedly; if no valid schedule is found, return a clear infeasible-density error.
-- Assign messages by shuffling `messages.items` once, then cycling through that order.
+- Assign messages by selecting categories and messages with recent-history-aware rotation.
+- Avoid consecutive duplicate categories when an alternative category exists.
+- Avoid consecutive duplicate messages when an alternative message exists.
+- Prefer unseen messages until each configured message has appeared once, when the daily poke count allows it.
+- Carry a bounded recent successful-send history across day boundaries so the first poke of a new day is not a hard reset.
 - If `pokes_per_day >= messages.items.len()`, every configured message appears at least once.
 
 ## Tick Behavior

@@ -2,9 +2,11 @@ use crate::config::Config;
 use crate::delivery::{DeliveryOutput, ImsgSender, Sender};
 use crate::paths::PokePaths;
 use crate::schedule;
-use crate::state::{self, PendingPoke, SentPoke, State, StateLock};
+use crate::state::{self, PendingPoke, RecentMessage, SentPoke, State, StateLock};
 use anyhow::{Context, bail};
 use chrono::{DateTime, FixedOffset, Local};
+
+const RECENT_HISTORY_LIMIT: usize = 8;
 
 pub fn run_tick(paths: &PokePaths) -> anyhow::Result<()> {
     paths.ensure_dirs()?;
@@ -42,13 +44,16 @@ pub fn show(paths: &PokePaths) -> anyhow::Result<String> {
     ));
     output.push_str("pending:\n");
     for poke in &state.pending {
-        output.push_str(&format!("  {} {} {}\n", poke.id, poke.at, poke.message));
+        output.push_str(&format!(
+            "  {} {} [{}] {}\n",
+            poke.id, poke.at, poke.category, poke.message
+        ));
     }
     output.push_str("last_sent:\n");
     if let Some(sent) = state.sent.last() {
         output.push_str(&format!(
-            "  {} scheduled={} sent={} {}\n",
-            sent.id, sent.scheduled_at, sent.sent_at, sent.message
+            "  {} scheduled={} sent={} [{}] {}\n",
+            sent.id, sent.scheduled_at, sent.sent_at, sent.category, sent.message
         ));
     } else {
         output.push_str("  none\n");
@@ -102,12 +107,15 @@ pub fn process_tick<S: Sender>(
 
     let sent_poke = state.pending.remove(due_index);
     state.pending.retain(|poke| poke.at > now);
+    let recent_message = RecentMessage::new(sent_poke.message.clone(), sent_poke.category.clone());
     state.sent.push(SentPoke {
         id: sent_poke.id,
         scheduled_at: sent_poke.at,
         sent_at: now,
         message: sent_poke.message,
+        category: sent_poke.category.clone(),
     });
+    record_recent_send(&mut state.recent_history, recent_message);
     Ok(TickOutcome {
         state_changed: true,
         sent_message: true,
@@ -120,8 +128,9 @@ pub fn regenerate_today(
     now: DateTime<FixedOffset>,
 ) -> anyhow::Result<()> {
     let mut rng = rand::thread_rng();
-    let pending = schedule::generate_for_date(config, now.date_naive(), &mut rng)
-        .context("failed to generate today's schedule")?;
+    let pending =
+        schedule::generate_for_date(config, &state.recent_history, now.date_naive(), &mut rng)
+            .context("failed to generate today's schedule")?;
     state.last_schedule_date = Some(now.date_naive());
     state.pending = pending;
     state.sent.clear();
@@ -146,6 +155,14 @@ fn log_delivery_failure(output: &DeliveryOutput) {
     }
     if !output.stderr.trim().is_empty() {
         eprintln!("imsg stderr: {}", output.stderr.trim_end());
+    }
+}
+
+fn record_recent_send(history: &mut Vec<RecentMessage>, sent: RecentMessage) {
+    history.push(sent);
+    if history.len() > RECENT_HISTORY_LIMIT {
+        let excess = history.len() - RECENT_HISTORY_LIMIT;
+        history.drain(0..excess);
     }
 }
 
@@ -183,6 +200,7 @@ mod tests {
             id: id.to_string(),
             at,
             message: format!("message {id}"),
+            category: "default".to_string(),
         }
     }
 
@@ -193,6 +211,7 @@ mod tests {
             last_schedule_date: Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap()),
             pending: vec![poke("a", dt(10, 0))],
             sent: vec![],
+            recent_history: vec![],
         };
         let mut sender = FakeSender {
             status_code: Some(0),
@@ -212,6 +231,7 @@ mod tests {
             last_schedule_date: Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap()),
             pending: vec![poke("a", dt(9, 0)), poke("b", dt(10, 0))],
             sent: vec![],
+            recent_history: vec![],
         };
         let mut sender = FakeSender {
             status_code: Some(0),
@@ -223,6 +243,10 @@ mod tests {
         assert_eq!(sender.calls, vec!["message a"]);
         assert_eq!(state.pending, vec![poke("b", dt(10, 0))]);
         assert_eq!(state.sent.len(), 1);
+        assert_eq!(
+            state.recent_history,
+            vec![RecentMessage::new("message a", "default")]
+        );
     }
 
     #[test]
@@ -236,6 +260,7 @@ mod tests {
                 poke("c", dt(11, 0)),
             ],
             sent: vec![],
+            recent_history: vec![],
         };
         let mut sender = FakeSender {
             status_code: Some(0),
@@ -255,6 +280,7 @@ mod tests {
             last_schedule_date: Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap()),
             pending: original.clone(),
             sent: vec![],
+            recent_history: vec![],
         };
         let mut sender = FakeSender {
             status_code: Some(1),
@@ -263,6 +289,7 @@ mod tests {
         assert!(process_tick(&config, &mut state, dt(9, 5), &mut sender).is_err());
         assert_eq!(state.pending, original);
         assert!(state.sent.is_empty());
+        assert!(state.recent_history.is_empty());
     }
 
     #[test]
@@ -276,7 +303,9 @@ mod tests {
                 scheduled_at: dt(9, 0) - Duration::days(1),
                 sent_at: dt(9, 5) - Duration::days(1),
                 message: "old".to_string(),
+                category: "default".to_string(),
             }],
+            recent_history: vec![RecentMessage::new("old", "default")],
         };
         let mut sender = FakeSender {
             status_code: Some(0),
@@ -291,6 +320,10 @@ mod tests {
         );
         assert_eq!(state.pending.len(), config.schedule.pokes_per_day);
         assert!(state.sent.is_empty());
+        assert_eq!(
+            state.recent_history,
+            vec![RecentMessage::new("old", "default")]
+        );
     }
 
     #[test]
@@ -301,6 +334,7 @@ mod tests {
             last_schedule_date: Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap()),
             pending: vec![poke("a", dt(9, 0))],
             sent: vec![],
+            recent_history: vec![],
         };
         save_state_atomic(&paths.state_file, &state).unwrap();
         let before = std::fs::read_to_string(&paths.state_file).unwrap();
@@ -310,5 +344,20 @@ mod tests {
         let after = std::fs::read_to_string(&paths.state_file).unwrap();
         assert!(output.contains("pending:"));
         assert_eq!(before, after);
+    }
+
+    #[test]
+    fn recent_history_is_bounded_to_last_successful_sends() {
+        let mut history = Vec::new();
+        for index in 0..10 {
+            record_recent_send(
+                &mut history,
+                RecentMessage::new(format!("message {index}"), "default"),
+            );
+        }
+
+        assert_eq!(history.len(), RECENT_HISTORY_LIMIT);
+        assert_eq!(history.first().unwrap().message, "message 2");
+        assert_eq!(history.last().unwrap().message, "message 9");
     }
 }

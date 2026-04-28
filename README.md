@@ -52,14 +52,18 @@ min_spacing_minutes = 45
 
 [messages]
 items = [
-  "Drink some water.",
-  "Stand up and stretch.",
-  "Take a walk.",
-  "Contemplate the orb."
+  { text = "Update openclaw context.", category = "focus" },
+  { text = "Drink water.", category = "hydration" },
+  { text = "Stand up and stretch.", category = "mobility" },
+  { text = "Walk around for two minutes.", category = "movement" },
+  { text = "Do ten air squats.", category = "movement" }
 ]
 ```
 
 The same starter config is also available at `assets/config.toml.sample`.
+
+`items` can also remain a plain string list. Plain strings are normalized to the
+default category `"default"`.
 
 `imsg_path` must be absolute. `poke tick` calls:
 
@@ -124,12 +128,15 @@ scheduled times inside `[start_hour, end_hour)`. It divides the active window
 into equal segments, picks one random timestamp per segment, and enforces
 `min_spacing_minutes`.
 
-For each generated poke, `poke` assigns one entry from `[messages].items`
-using a shuffle-and-cycle strategy: the message list is shuffled once per day,
-then assigned to poke slots in order, cycling back to the start if
-`pokes_per_day` exceeds the number of messages. When `pokes_per_day` is at
-least as large as the number of messages, every message is guaranteed to appear
-at least once each day.
+For each generated poke, `poke` chooses a category sequence that prefers
+least-recently-used categories, avoids back-to-back category repeats when an
+alternative exists, and carries a short recent-send history across day
+boundaries. Within each category, it chooses the least-recently-used message,
+again avoiding immediate repeats when possible.
+
+When `pokes_per_day` is at least as large as the number of configured messages,
+`poke` still guarantees that every configured message appears at least once each
+day before it repeats any of them.
 
 If multiple pokes are overdue when a tick runs, `poke` sends the earliest due
 poke and drops the other missed overdue pokes after the send succeeds. Future

@@ -1,24 +1,28 @@
-use crate::config::Config;
-use crate::state::PendingPoke;
+use crate::config::{Config, MessageTemplate};
+use crate::state::{PendingPoke, RecentMessage};
 use anyhow::{Context, bail};
 use chrono::{
     DateTime, Datelike, Duration, FixedOffset, Local, LocalResult, NaiveDate, TimeZone, Timelike,
 };
 use rand::Rng;
+use rand::seq::SliceRandom;
+use std::collections::BTreeMap;
 
 const MAX_ATTEMPTS: usize = 1_000;
 
 pub fn generate_for_date<R: Rng + ?Sized>(
     config: &Config,
+    recent_history: &[RecentMessage],
     date: NaiveDate,
     rng: &mut R,
 ) -> anyhow::Result<Vec<PendingPoke>> {
     let interval = active_interval(date, config.schedule.start_hour, config.schedule.end_hour)?;
-    generate_in_interval(config, date, interval, rng)
+    generate_in_interval(config, recent_history, date, interval, rng)
 }
 
 fn generate_in_interval<R: Rng + ?Sized>(
     config: &Config,
+    recent_history: &[RecentMessage],
     date: NaiveDate,
     interval: ActiveInterval,
     rng: &mut R,
@@ -51,14 +55,15 @@ fn generate_in_interval<R: Rng + ?Sized>(
         }
         times.sort();
         if respects_min_spacing(&times, min_spacing) {
-            let messages = select_messages(&config.messages.items, count, rng);
+            let messages = select_messages(&config.messages.items, count, recent_history, rng);
             return Ok(times
                 .into_iter()
                 .enumerate()
                 .map(|(index, at)| PendingPoke {
                     id: format!("{date}-{index}"),
                     at,
-                    message: messages[index].clone(),
+                    message: messages[index].text.clone(),
+                    category: messages[index].category.clone(),
                 })
                 .collect());
         }
@@ -118,19 +123,178 @@ fn respects_min_spacing(times: &[DateTime<FixedOffset>], min_spacing: Duration) 
         .all(|pair| pair[1] - pair[0] >= min_spacing)
 }
 
-fn select_messages<R: Rng + ?Sized>(messages: &[String], count: usize, rng: &mut R) -> Vec<String> {
-    use rand::seq::SliceRandom;
-    let mut indices: Vec<usize> = (0..messages.len()).collect();
-    indices.shuffle(rng);
-    (0..count).map(|i| messages[indices[i % indices.len()]].clone()).collect()
+fn select_messages<R: Rng + ?Sized>(
+    messages: &[MessageTemplate],
+    count: usize,
+    recent_history: &[RecentMessage],
+    rng: &mut R,
+) -> Vec<MessageTemplate> {
+    let category_members = category_members(messages);
+    let mut unseen = vec![true; messages.len()];
+    let mut working_history = recent_history.to_vec();
+    let mut selected = Vec::with_capacity(count);
+
+    for slot in 0..count {
+        let remaining_slots = count - slot;
+        let remaining_unseen = unseen.iter().filter(|is_unseen| **is_unseen).count();
+        let category = select_category(
+            &category_members,
+            &unseen,
+            &working_history,
+            remaining_slots,
+            remaining_unseen,
+            rng,
+        );
+        let message_index = select_message_index(
+            messages,
+            &category_members,
+            category,
+            &unseen,
+            &working_history,
+            rng,
+        );
+        unseen[message_index] = false;
+        let message = messages[message_index].clone();
+        working_history.push(RecentMessage::new(
+            message.text.clone(),
+            message.category.clone(),
+        ));
+        selected.push(message);
+    }
+
+    selected
+}
+
+fn category_members(messages: &[MessageTemplate]) -> BTreeMap<String, Vec<usize>> {
+    let mut categories = BTreeMap::new();
+    for (index, message) in messages.iter().enumerate() {
+        categories
+            .entry(message.category.clone())
+            .or_insert_with(Vec::new)
+            .push(index);
+    }
+    categories
+}
+
+fn select_category<'a, R: Rng + ?Sized>(
+    category_members: &'a BTreeMap<String, Vec<usize>>,
+    unseen: &[bool],
+    history: &[RecentMessage],
+    remaining_slots: usize,
+    remaining_unseen: usize,
+    rng: &mut R,
+) -> &'a str {
+    let mut candidates: Vec<&'a str> = category_members.keys().map(String::as_str).collect();
+
+    if remaining_slots == remaining_unseen && remaining_unseen > 0 {
+        candidates.retain(|category| category_has_unseen(category_members, category, unseen));
+    }
+
+    if let Some(last_category) = history.last().map(|entry| entry.category.as_str())
+        && candidates.iter().any(|category| *category != last_category)
+    {
+        candidates.retain(|category| *category != last_category);
+    }
+
+    if candidates
+        .iter()
+        .any(|category| category_has_unseen(category_members, category, unseen))
+    {
+        candidates.retain(|category| category_has_unseen(category_members, category, unseen));
+    }
+
+    choose_least_recently_used(
+        history,
+        candidates,
+        |entry, category| entry.category == *category,
+        rng,
+    )
+}
+
+fn select_message_index<R: Rng + ?Sized>(
+    messages: &[MessageTemplate],
+    category_members: &BTreeMap<String, Vec<usize>>,
+    category: &str,
+    unseen: &[bool],
+    history: &[RecentMessage],
+    rng: &mut R,
+) -> usize {
+    let mut candidates = category_members[category].clone();
+
+    if candidates.iter().any(|index| unseen[*index]) {
+        candidates.retain(|index| unseen[*index]);
+    }
+
+    if let Some(last) = history.last()
+        && candidates
+            .iter()
+            .any(|index| !matches_recent_message(&messages[*index], last))
+    {
+        candidates.retain(|index| !matches_recent_message(&messages[*index], last));
+    }
+
+    *choose_least_recently_used(
+        history,
+        candidates.iter().collect(),
+        |entry, index| matches_recent_message(&messages[**index], entry),
+        rng,
+    )
+}
+
+fn choose_least_recently_used<T, R, F>(
+    history: &[RecentMessage],
+    candidates: Vec<T>,
+    matches: F,
+    rng: &mut R,
+) -> T
+where
+    T: Clone,
+    R: Rng + ?Sized,
+    F: Fn(&RecentMessage, &T) -> bool,
+{
+    let best_score = candidates
+        .iter()
+        .map(|candidate| recency_score(history, |entry| matches(entry, candidate)))
+        .max()
+        .unwrap_or(usize::MAX);
+    let best: Vec<T> = candidates
+        .into_iter()
+        .filter(|candidate| recency_score(history, |entry| matches(entry, candidate)) == best_score)
+        .collect();
+    best.choose(rng).cloned().expect("at least one candidate")
+}
+
+fn category_has_unseen(
+    category_members: &BTreeMap<String, Vec<usize>>,
+    category: &str,
+    unseen: &[bool],
+) -> bool {
+    category_members[category]
+        .iter()
+        .any(|index| unseen[*index])
+}
+
+fn recency_score<F>(history: &[RecentMessage], matches: F) -> usize
+where
+    F: Fn(&RecentMessage) -> bool,
+{
+    history.iter().rev().position(matches).unwrap_or(usize::MAX)
+}
+
+fn matches_recent_message(message: &MessageTemplate, recent: &RecentMessage) -> bool {
+    message.text == recent.message && message.category == recent.category
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::default_config;
+    use crate::config::{MessageTemplate, default_config};
     use rand::SeedableRng;
     use rand::rngs::StdRng;
+
+    fn message(text: &str, category: &str) -> MessageTemplate {
+        MessageTemplate::new(text, category)
+    }
 
     #[test]
     fn generated_count_equals_pokes_per_day() {
@@ -138,6 +302,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(1);
         let pokes = generate_for_date(
             &config,
+            &[],
             NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
             &mut rng,
         )
@@ -152,7 +317,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(2);
         let interval =
             active_interval(date, config.schedule.start_hour, config.schedule.end_hour).unwrap();
-        let pokes = generate_for_date(&config, date, &mut rng).unwrap();
+        let pokes = generate_for_date(&config, &[], date, &mut rng).unwrap();
         assert!(
             pokes
                 .iter()
@@ -168,6 +333,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(3);
         let pokes = generate_for_date(
             &config,
+            &[],
             NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
             &mut rng,
         )
@@ -185,6 +351,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let pokes = generate_for_date(
             &config,
+            &[],
             NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
             &mut rng,
         )
@@ -192,7 +359,11 @@ mod tests {
         let selected: std::collections::HashSet<&str> =
             pokes.iter().map(|p| p.message.as_str()).collect();
         for msg in &config.messages.items {
-            assert!(selected.contains(msg.as_str()), "message not selected: {msg}");
+            assert!(
+                selected.contains(msg.text.as_str()),
+                "message not selected: {}",
+                msg.text
+            );
         }
     }
 
@@ -204,5 +375,80 @@ mod tests {
         assert!(is_within_active_window(start, 9, 21));
         assert!(is_within_active_window(before_end, 9, 21));
         assert!(!is_within_active_window(end, 9, 21));
+    }
+
+    #[test]
+    fn avoids_consecutive_categories_when_alternatives_exist() {
+        let mut config = default_config();
+        config.schedule.pokes_per_day = 6;
+        config.messages.items = vec![
+            message("Drink water.", "hydration"),
+            message("Stretch.", "movement"),
+            message("Walk.", "movement"),
+            message("Review notes.", "focus"),
+        ];
+        let mut rng = StdRng::seed_from_u64(7);
+        let pokes = generate_for_date(
+            &config,
+            &[],
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+
+        for pair in pokes.windows(2) {
+            let distinct_categories_exist = config
+                .messages
+                .items
+                .iter()
+                .any(|item| item.category != pair[0].category);
+            if distinct_categories_exist {
+                assert_ne!(pair[0].category, pair[1].category);
+            }
+        }
+    }
+
+    #[test]
+    fn avoids_consecutive_messages_when_alternatives_exist() {
+        let mut config = default_config();
+        config.schedule.pokes_per_day = 5;
+        config.messages.items = vec![
+            message("Drink water.", "default"),
+            message("Stretch.", "default"),
+            message("Walk.", "default"),
+        ];
+        let mut rng = StdRng::seed_from_u64(9);
+        let pokes = generate_for_date(
+            &config,
+            &[],
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+
+        for pair in pokes.windows(2) {
+            assert_ne!(pair[0].message, pair[1].message);
+        }
+    }
+
+    #[test]
+    fn recent_history_biases_the_first_category_of_the_day() {
+        let mut config = default_config();
+        config.schedule.pokes_per_day = 2;
+        config.messages.items = vec![
+            message("Drink water.", "hydration"),
+            message("Stand up.", "movement"),
+        ];
+        let history = vec![RecentMessage::new("Drink water.", "hydration")];
+        let mut rng = StdRng::seed_from_u64(11);
+        let pokes = generate_for_date(
+            &config,
+            &history,
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+
+        assert_eq!(pokes[0].category, "movement");
     }
 }

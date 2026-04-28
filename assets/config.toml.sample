@@ -10,8 +10,9 @@ min_spacing_minutes = 45
 
 [messages]
 items = [
-  "Drink some water.",
-  "Stand up and stretch.",
-  "Take a walk.",
-  "Contemplate the orb."
+  { text = "Update openclaw context.", category = "focus" },
+  { text = "Drink water.", category = "hydration" },
+  { text = "Stand up and stretch.", category = "mobility" },
+  { text = "Walk around for two minutes.", category = "movement" },
+  { text = "Do ten air squats.", category = "movement" }
 ]
