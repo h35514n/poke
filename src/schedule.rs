@@ -31,9 +31,9 @@ fn generate_in_interval<R: Rng + ?Sized>(
     interval: ActiveInterval,
     rng: &mut R,
 ) -> anyhow::Result<Vec<PendingPoke>> {
-    let count = config.schedule.pokes_per_day;
+    let count = config.schedule.random_per_day;
     let total_seconds = (interval.end - interval.start).num_seconds();
-    let min_spacing = Duration::minutes(config.schedule.min_spacing_minutes);
+    let min_spacing = Duration::minutes(config.schedule.random_min_spacing_minutes);
     let required = min_spacing
         .num_seconds()
         .saturating_mul(count.saturating_sub(1).try_into().unwrap_or(i64::MAX));
@@ -41,7 +41,7 @@ fn generate_in_interval<R: Rng + ?Sized>(
         bail!(
             "schedule density is infeasible: window is too small for {} pokes with {} minutes minimum spacing",
             count,
-            config.schedule.min_spacing_minutes
+            config.schedule.random_min_spacing_minutes
         );
     }
 
@@ -59,15 +59,16 @@ fn generate_in_interval<R: Rng + ?Sized>(
         }
         times.sort();
         if respects_min_spacing(&times, min_spacing) {
-            let messages = select_messages(&config.messages.items, count, recent_history, rng);
+            let random_items =
+                select_random_items(&config.random.items, count, recent_history, rng);
             return Ok(times
                 .into_iter()
                 .enumerate()
                 .map(|(index, at)| PendingPoke {
                     id: format!("{date}-random-{index}"),
                     at,
-                    message: messages[index].text.clone(),
-                    category: messages[index].category.clone(),
+                    message: random_items[index].text.clone(),
+                    category: random_items[index].category.clone(),
                     kind: PokeKind::Random,
                 })
                 .collect());
@@ -77,7 +78,7 @@ fn generate_in_interval<R: Rng + ?Sized>(
     bail!(
         "schedule density is infeasible after {MAX_ATTEMPTS} attempts: window is too small for {} pokes with {} minutes minimum spacing",
         count,
-        config.schedule.min_spacing_minutes
+        config.schedule.random_min_spacing_minutes
     )
 }
 
@@ -190,14 +191,14 @@ fn respects_min_spacing(times: &[DateTime<FixedOffset>], min_spacing: Duration) 
         .all(|pair| pair[1] - pair[0] >= min_spacing)
 }
 
-fn select_messages<R: Rng + ?Sized>(
-    messages: &[MessageTemplate],
+fn select_random_items<R: Rng + ?Sized>(
+    pool: &[MessageTemplate],
     count: usize,
     recent_history: &[RecentMessage],
     rng: &mut R,
 ) -> Vec<MessageTemplate> {
-    let category_members = category_members(messages);
-    let mut unseen = vec![true; messages.len()];
+    let category_members = category_members(pool);
+    let mut unseen = vec![true; pool.len()];
     let mut working_history = recent_history.to_vec();
     let mut selected = Vec::with_capacity(count);
 
@@ -213,7 +214,7 @@ fn select_messages<R: Rng + ?Sized>(
             rng,
         );
         let message_index = select_message_index(
-            messages,
+            pool,
             &category_members,
             category,
             &unseen,
@@ -221,7 +222,7 @@ fn select_messages<R: Rng + ?Sized>(
             rng,
         );
         unseen[message_index] = false;
-        let message = messages[message_index].clone();
+        let message = pool[message_index].clone();
         working_history.push(RecentMessage::new(
             message.text.clone(),
             message.category.clone(),
@@ -365,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_count_equals_pokes_per_day() {
+    fn generated_count_equals_random_per_day() {
         let config = default_config();
         let mut rng = StdRng::seed_from_u64(1);
         let pokes = generate_for_date(
@@ -375,7 +376,7 @@ mod tests {
             &mut rng,
         )
         .unwrap();
-        assert_eq!(pokes.len(), config.schedule.pokes_per_day);
+        assert_eq!(pokes.len(), config.schedule.random_per_day);
     }
 
     #[test]
@@ -403,7 +404,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             pokes.len(),
-            config.schedule.pokes_per_day + config.scheduled.items.len()
+            config.schedule.random_per_day + config.scheduled.items.len()
         );
         assert_eq!(
             pokes
@@ -419,7 +420,7 @@ mod tests {
         let mut config = default_config();
         config.schedule.start_hour = 9;
         config.schedule.end_hour = 12;
-        config.schedule.pokes_per_day = 1;
+        config.schedule.random_per_day = 1;
         config.intervals.items = vec![IntervalMessage::new(60, "Drink water.", "hydration")];
         let mut rng = StdRng::seed_from_u64(13);
         let pokes = generate_for_date(
@@ -436,7 +437,7 @@ mod tests {
         assert_eq!(interval_pokes.len(), 3);
         assert_eq!(
             pokes.len(),
-            config.schedule.pokes_per_day + interval_pokes.len()
+            config.schedule.random_per_day + interval_pokes.len()
         );
         assert_eq!(interval_pokes[0].at.hour(), 9);
         assert_eq!(interval_pokes[1].at.hour(), 10);
@@ -461,8 +462,8 @@ mod tests {
     #[test]
     fn generated_times_respect_minimum_spacing() {
         let mut config = default_config();
-        config.schedule.pokes_per_day = 4;
-        config.schedule.min_spacing_minutes = 90;
+        config.schedule.random_per_day = 4;
+        config.schedule.random_min_spacing_minutes = 90;
         let mut rng = StdRng::seed_from_u64(3);
         let pokes = generate_for_date(
             &config,
@@ -479,8 +480,8 @@ mod tests {
     #[test]
     fn scheduled_messages_do_not_affect_minimum_spacing() {
         let mut config = default_config();
-        config.schedule.pokes_per_day = 1;
-        config.schedule.min_spacing_minutes = 120;
+        config.schedule.random_per_day = 1;
+        config.schedule.random_min_spacing_minutes = 120;
         config.scheduled.items = vec![
             ScheduledMessage::new(
                 NaiveTime::from_hms_opt(15, 0, 0).unwrap(),
@@ -515,7 +516,7 @@ mod tests {
         let mut config = default_config();
         config.schedule.start_hour = 9;
         config.schedule.end_hour = 11;
-        config.schedule.pokes_per_day = 1;
+        config.schedule.random_per_day = 1;
         config.intervals.items = vec![IntervalMessage::new(30, "Drink water.", "hydration")];
         let mut rng = StdRng::seed_from_u64(17);
         let pokes = generate_for_date(
@@ -538,7 +539,7 @@ mod tests {
         let mut config = default_config();
         config.schedule.start_hour = 9;
         config.schedule.end_hour = 10;
-        config.schedule.pokes_per_day = 1;
+        config.schedule.random_per_day = 1;
         config.intervals.items = vec![IntervalMessage::new(120, "Drink water.", "hydration")];
         let mut rng = StdRng::seed_from_u64(19);
         let pokes = generate_for_date(
@@ -559,8 +560,8 @@ mod tests {
     #[test]
     fn interval_messages_do_not_affect_minimum_spacing() {
         let mut config = default_config();
-        config.schedule.pokes_per_day = 1;
-        config.schedule.min_spacing_minutes = 120;
+        config.schedule.random_per_day = 1;
+        config.schedule.random_min_spacing_minutes = 120;
         config.intervals.items = vec![IntervalMessage::new(5, "Drink water.", "hydration")];
         let mut rng = StdRng::seed_from_u64(23);
         let pokes = generate_for_date(
@@ -579,7 +580,7 @@ mod tests {
         let mut config = default_config();
         config.schedule.start_hour = 9;
         config.schedule.end_hour = 12;
-        config.schedule.pokes_per_day = 1;
+        config.schedule.random_per_day = 1;
         config.scheduled.items = vec![ScheduledMessage::new(
             NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
             "Early fixed.",
@@ -598,10 +599,10 @@ mod tests {
     }
 
     #[test]
-    fn all_messages_appear_when_pokes_exceed_message_count() {
+    fn all_random_items_appear_when_random_count_exceeds_item_count() {
         let config = default_config();
-        // default: 5 messages, 6 pokes/day
-        assert!(config.schedule.pokes_per_day >= config.messages.items.len());
+        // default: 5 random items, 6 random pokes/day
+        assert!(config.schedule.random_per_day >= config.random.items.len());
         let mut rng = StdRng::seed_from_u64(42);
         let pokes = generate_for_date(
             &config,
@@ -612,7 +613,7 @@ mod tests {
         .unwrap();
         let selected: std::collections::HashSet<&str> =
             pokes.iter().map(|p| p.message.as_str()).collect();
-        for msg in &config.messages.items {
+        for msg in &config.random.items {
             assert!(
                 selected.contains(msg.text.as_str()),
                 "message not selected: {}",
@@ -634,8 +635,8 @@ mod tests {
     #[test]
     fn avoids_consecutive_categories_when_alternatives_exist() {
         let mut config = default_config();
-        config.schedule.pokes_per_day = 6;
-        config.messages.items = vec![
+        config.schedule.random_per_day = 6;
+        config.random.items = vec![
             message("Drink water.", "hydration"),
             message("Stretch.", "movement"),
             message("Walk.", "movement"),
@@ -652,7 +653,7 @@ mod tests {
 
         for pair in pokes.windows(2) {
             let distinct_categories_exist = config
-                .messages
+                .random
                 .items
                 .iter()
                 .any(|item| item.category != pair[0].category);
@@ -663,10 +664,10 @@ mod tests {
     }
 
     #[test]
-    fn avoids_consecutive_messages_when_alternatives_exist() {
+    fn avoids_consecutive_random_messages_when_alternatives_exist() {
         let mut config = default_config();
-        config.schedule.pokes_per_day = 5;
-        config.messages.items = vec![
+        config.schedule.random_per_day = 5;
+        config.random.items = vec![
             message("Drink water.", "default"),
             message("Stretch.", "default"),
             message("Walk.", "default"),
@@ -688,8 +689,8 @@ mod tests {
     #[test]
     fn recent_history_biases_the_first_category_of_the_day() {
         let mut config = default_config();
-        config.schedule.pokes_per_day = 2;
-        config.messages.items = vec![
+        config.schedule.random_per_day = 2;
+        config.random.items = vec![
             message("Drink water.", "hydration"),
             message("Stand up.", "movement"),
         ];

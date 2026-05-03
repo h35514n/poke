@@ -47,10 +47,10 @@ imsg_path = "/opt/homebrew/bin/imsg"
 [schedule]
 start_hour = 9
 end_hour = 21
-pokes_per_day = 6
-min_spacing_minutes = 45
+random_per_day = 6
+random_min_spacing_minutes = 45
 
-[messages]
+[random]
 items = [
   { text = "Update openclaw context.", category = "focus" },
   { text = "Drink water.", category = "hydration" },
@@ -72,12 +72,12 @@ items = [
 
 The same starter config is also available at `assets/config.toml.sample`.
 
-`messages.items` is the random message pool. Items can also remain a plain
+`random.items` is the random message pool. Items can also remain a plain
 string list. Plain strings are normalized to the default category `"default"`.
 
 `scheduled.items` is optional. These are explicit daily messages delivered at
-the configured local wall-clock time. They do not count toward `pokes_per_day`,
-do not affect `min_spacing_minutes`, and can send outside the active window.
+the configured local wall-clock time. They do not count toward `random_per_day`,
+do not affect `random_min_spacing_minutes`, and can send outside the active window.
 Use `"HH:MM"` times such as `"15:00"`; friendlier inputs such as `"3:00pm"` are
 also accepted.
 
@@ -85,7 +85,7 @@ also accepted.
 `start_hour`, then every `every_minutes` while the local time is before
 `end_hour`. Intervals must be at least 5 minutes because `launchd` runs
 `poke tick` every 5 minutes. Interval messages do not count toward
-`pokes_per_day`, do not affect `min_spacing_minutes`, and stand outside random
+`random_per_day`, do not affect `random_min_spacing_minutes`, and stand outside random
 rotation and recent-history logic.
 
 `imsg_path` must be absolute. `poke tick` calls:
@@ -146,10 +146,10 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.$USER.poke.plist
 Behavior
 --------
 
-At the first tick of each local calendar day, `poke` generates `pokes_per_day`
+At the first tick of each local calendar day, `poke` generates `random_per_day`
 random scheduled times inside `[start_hour, end_hour)`. It divides the active
 window into equal segments, picks one random timestamp per segment, and enforces
-`min_spacing_minutes`.
+`random_min_spacing_minutes`.
 
 For each generated poke, `poke` chooses a category sequence that prefers
 least-recently-used categories, avoids back-to-back category repeats when an
@@ -157,8 +157,8 @@ alternative exists, and carries a short recent-send history across day
 boundaries. Within each category, it chooses the least-recently-used message,
 again avoiding immediate repeats when possible.
 
-When `pokes_per_day` is at least as large as the number of configured messages,
-`poke` still guarantees that every configured message appears at least once each
+When `random_per_day` is at least as large as the number of configured random messages,
+`poke` still guarantees that every configured random message appears at least once each
 day before it repeats any of them.
 
 Explicit `scheduled.items` and `intervals.items` are added to the same pending

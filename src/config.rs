@@ -7,10 +7,11 @@ use std::path::{Path, PathBuf};
 pub const DEFAULT_MESSAGE_CATEGORY: &str = "default";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub delivery: DeliveryConfig,
     pub schedule: ScheduleConfig,
-    pub messages: MessagesConfig,
+    pub random: RandomConfig,
     #[serde(default, skip_serializing_if = "ScheduledConfig::is_empty")]
     pub scheduled: ScheduledConfig,
     #[serde(default, skip_serializing_if = "IntervalsConfig::is_empty")]
@@ -18,25 +19,29 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct DeliveryConfig {
     pub destination: String,
     pub imsg_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ScheduleConfig {
     pub start_hour: u32,
     pub end_hour: u32,
-    pub pokes_per_day: usize,
-    pub min_spacing_minutes: i64,
+    pub random_per_day: usize,
+    pub random_min_spacing_minutes: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MessagesConfig {
+#[serde(deny_unknown_fields)]
+pub struct RandomConfig {
     pub items: Vec<MessageTemplate>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ScheduledConfig {
     #[serde(default)]
     pub items: Vec<ScheduledMessage>,
@@ -49,6 +54,7 @@ impl ScheduledConfig {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct IntervalsConfig {
     #[serde(default)]
     pub items: Vec<IntervalMessage>,
@@ -76,6 +82,7 @@ impl MessageTemplate {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ScheduledMessage {
     #[serde(with = "scheduled_time_format")]
     pub time: NaiveTime,
@@ -85,6 +92,7 @@ pub struct ScheduledMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct IntervalMessage {
     pub every_minutes: u32,
     pub text: String,
@@ -173,30 +181,30 @@ impl Config {
         if self.schedule.end_hour <= self.schedule.start_hour {
             bail!("schedule.end_hour must be greater than schedule.start_hour");
         }
-        if self.schedule.pokes_per_day == 0 {
-            bail!("schedule.pokes_per_day must be greater than 0");
+        if self.schedule.random_per_day == 0 {
+            bail!("schedule.random_per_day must be greater than 0");
         }
-        if self.schedule.min_spacing_minutes < 0 {
-            bail!("schedule.min_spacing_minutes must not be negative");
+        if self.schedule.random_min_spacing_minutes < 0 {
+            bail!("schedule.random_min_spacing_minutes must not be negative");
         }
-        if self.messages.items.is_empty() {
-            bail!("messages.items must contain at least one message");
+        if self.random.items.is_empty() {
+            bail!("random.items must contain at least one message");
         }
         if self
-            .messages
+            .random
             .items
             .iter()
             .any(|item| item.text.trim().is_empty())
         {
-            bail!("messages.items must not contain empty messages");
+            bail!("random.items must not contain empty messages");
         }
         if self
-            .messages
+            .random
             .items
             .iter()
             .any(|item| item.category.trim().is_empty())
         {
-            bail!("messages.items categories must not be empty");
+            bail!("random.items categories must not be empty");
         }
         if self
             .scheduled
@@ -254,16 +262,16 @@ impl Config {
 pub fn validate_density(schedule: &ScheduleConfig) -> anyhow::Result<()> {
     let window_minutes = ((schedule.end_hour - schedule.start_hour) as i64) * 60;
     let gap_count: i64 = schedule
-        .pokes_per_day
+        .random_per_day
         .saturating_sub(1)
         .try_into()
         .unwrap_or(i64::MAX);
-    let required_gap_minutes = gap_count.saturating_mul(schedule.min_spacing_minutes);
-    if schedule.min_spacing_minutes > 0 && required_gap_minutes >= window_minutes {
+    let required_gap_minutes = gap_count.saturating_mul(schedule.random_min_spacing_minutes);
+    if schedule.random_min_spacing_minutes > 0 && required_gap_minutes >= window_minutes {
         bail!(
             "schedule window is too small for {} pokes with {} minutes minimum spacing",
-            schedule.pokes_per_day,
-            schedule.min_spacing_minutes
+            schedule.random_per_day,
+            schedule.random_min_spacing_minutes
         );
     }
     Ok(())
@@ -278,10 +286,10 @@ pub fn default_config() -> Config {
         schedule: ScheduleConfig {
             start_hour: 9,
             end_hour: 21,
-            pokes_per_day: 6,
-            min_spacing_minutes: 45,
+            random_per_day: 6,
+            random_min_spacing_minutes: 45,
         },
-        messages: MessagesConfig {
+        random: RandomConfig {
             items: vec![
                 MessageTemplate::new("Update openclaw context.", "focus"),
                 MessageTemplate::new("Drink water.", "hydration"),
@@ -355,7 +363,7 @@ mod scheduled_time_format {
 mod tests {
     use super::*;
 
-    fn base_toml(messages: &str) -> String {
+    fn base_toml(random: &str) -> String {
         format!(
             r#"
 [delivery]
@@ -365,11 +373,11 @@ imsg_path = "/tmp/imsg"
 [schedule]
 start_hour = 9
 end_hour = 21
-pokes_per_day = 6
-min_spacing_minutes = 45
+random_per_day = 6
+random_min_spacing_minutes = 45
 
-[messages]
-items = {messages}
+[random]
+items = {random}
 "#
         )
     }
@@ -384,10 +392,10 @@ imsg_path = "/tmp/imsg"
 [schedule]
 start_hour = 9
 end_hour = 21
-pokes_per_day = 6
-min_spacing_minutes = 45
+random_per_day = 6
+random_min_spacing_minutes = 45
 
-[messages]
+[random]
 items = ["Drink water."]
 
 [scheduled]
@@ -406,10 +414,10 @@ imsg_path = "/tmp/imsg"
 [schedule]
 start_hour = 9
 end_hour = 21
-pokes_per_day = 6
-min_spacing_minutes = 45
+random_per_day = 6
+random_min_spacing_minutes = 45
 
-[messages]
+[random]
 items = ["Drink water."]
 
 [intervals]
@@ -424,11 +432,11 @@ items = {intervals}
     }
 
     #[test]
-    fn string_only_messages_default_to_default_category() {
+    fn string_only_random_items_default_to_default_category() {
         let config: Config =
             toml::from_str(&base_toml(r#"["Drink water.", "Stand up and stretch."]"#)).unwrap();
         assert_eq!(
-            config.messages.items,
+            config.random.items,
             vec![
                 MessageTemplate::new("Drink water.", DEFAULT_MESSAGE_CATEGORY),
                 MessageTemplate::new("Stand up and stretch.", DEFAULT_MESSAGE_CATEGORY),
@@ -437,7 +445,7 @@ items = {intervals}
     }
 
     #[test]
-    fn mixed_message_shapes_parse_and_normalize() {
+    fn mixed_random_item_shapes_parse_and_normalize() {
         let config: Config = toml::from_str(&base_toml(
             r#"[
   "Drink water.",
@@ -447,7 +455,7 @@ items = {intervals}
         ))
         .unwrap();
         assert_eq!(
-            config.messages.items,
+            config.random.items,
             vec![
                 MessageTemplate::new("Drink water.", DEFAULT_MESSAGE_CATEGORY),
                 MessageTemplate::new("Stand up and stretch.", "movement"),
@@ -515,18 +523,64 @@ items = {intervals}
         let mut config = default_config();
         config.schedule.start_hour = 9;
         config.schedule.end_hour = 10;
-        config.schedule.pokes_per_day = 3;
-        config.schedule.min_spacing_minutes = 45;
+        config.schedule.random_per_day = 3;
+        config.schedule.random_min_spacing_minutes = 45;
         let err = config.validate(false).unwrap_err().to_string();
         assert!(err.contains("too small"));
     }
 
     #[test]
-    fn empty_message_category_is_rejected() {
+    fn empty_random_category_is_rejected() {
         let mut config = default_config();
-        config.messages.items = vec![MessageTemplate::new("Drink water.", "")];
+        config.random.items = vec![MessageTemplate::new("Drink water.", "")];
         let err = config.validate(false).unwrap_err().to_string();
         assert!(err.contains("categories must not be empty"));
+    }
+
+    #[test]
+    fn old_messages_section_is_rejected() {
+        let err = toml::from_str::<Config>(
+            r#"
+[delivery]
+destination = "+15555555555"
+imsg_path = "/tmp/imsg"
+
+[schedule]
+start_hour = 9
+end_hour = 21
+random_per_day = 6
+random_min_spacing_minutes = 45
+
+[messages]
+items = ["Drink water."]
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field `messages`"));
+    }
+
+    #[test]
+    fn old_schedule_count_and_spacing_are_rejected() {
+        let err = toml::from_str::<Config>(
+            r#"
+[delivery]
+destination = "+15555555555"
+imsg_path = "/tmp/imsg"
+
+[schedule]
+start_hour = 9
+end_hour = 21
+pokes_per_day = 6
+min_spacing_minutes = 45
+
+[random]
+items = ["Drink water."]
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field `pokes_per_day`"));
     }
 
     #[test]

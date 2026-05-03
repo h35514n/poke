@@ -44,10 +44,10 @@ imsg_path = "/opt/homebrew/bin/imsg"
 [schedule]
 start_hour = 9
 end_hour = 21
-pokes_per_day = 6
-min_spacing_minutes = 45
+random_per_day = 6
+random_min_spacing_minutes = 45
 
-[messages]
+[random]
 items = [
   { text = "Update openclaw context.", category = "focus" },
   { text = "Drink water.", category = "hydration" },
@@ -74,13 +74,13 @@ Validation:
 - `schedule.start_hour` must be `0..=23`.
 - `schedule.end_hour` must be `1..=24`.
 - `schedule.end_hour` must be greater than `schedule.start_hour`.
-- `schedule.pokes_per_day` must be greater than zero.
-- `schedule.min_spacing_minutes` must not be negative.
-- `messages.items` must contain at least one non-empty message.
+- `schedule.random_per_day` must be greater than zero.
+- `schedule.random_min_spacing_minutes` must not be negative.
+- `random.items` must contain at least one non-empty message.
 - Each message item may be a plain string or an inline table with `text` and optional `category`.
 - Plain string messages default to category `"default"`.
 - Message categories must not be empty.
-- `messages.items` is the random-select message pool.
+- `random.items` is the random-select message pool.
 - `scheduled.items` is optional and contains explicit daily wall-clock messages.
 - Each scheduled item has required `time` and `text`, plus optional `category`.
 - Scheduled item time should be documented as `"HH:MM"` and may also accept friendly `"h:MMam/pm"` input.
@@ -94,8 +94,8 @@ Validation:
 - The configured active window must be large enough for the requested poke count and minimum spacing.
 
 The active window is local wall-clock time `[start_hour, end_hour)`.
-Scheduled items are exempt from `pokes_per_day`, `min_spacing_minutes`, and the active window.
-Interval items are exempt from `pokes_per_day`, `min_spacing_minutes`, random rotation, and recent-history tracking, but are bound to the active window.
+Scheduled items are exempt from `random_per_day`, `random_min_spacing_minutes`, and the active window.
+Interval items are exempt from `random_per_day`, `random_min_spacing_minutes`, random rotation, and recent-history tracking, but are bound to the active window.
 
 ## State
 
@@ -144,18 +144,18 @@ State rules:
 
 ## Schedule Generation
 
-- Generate exactly `pokes_per_day` random pokes for the local date.
+- Generate exactly `random_per_day` random pokes for the local date.
 - Build the active interval from local `start_hour:00` to local `end_hour:00`.
-- Split the interval into `pokes_per_day` contiguous segments.
+- Split the interval into `random_per_day` contiguous segments.
 - Sample one timestamp uniformly within each segment.
-- Sort timestamps and enforce `min_spacing_minutes`.
+- Sort timestamps and enforce `random_min_spacing_minutes`.
 - Retry boundedly; if no valid schedule is found, return a clear infeasible-density error.
 - Assign messages by selecting categories and messages with recent-history-aware rotation.
 - Avoid consecutive duplicate categories when an alternative category exists.
 - Avoid consecutive duplicate messages when an alternative message exists.
 - Prefer unseen messages until each configured message has appeared once, when the daily poke count allows it.
 - Carry a bounded recent successful-send history across day boundaries so the first poke of a new day is not a hard reset.
-- If `pokes_per_day >= messages.items.len()`, every configured message appears at least once.
+- If `random_per_day >= random.items.len()`, every configured random message appears at least once.
 - Generate every configured scheduled item for the local date at its configured local wall-clock time.
 - Generate each configured interval item at `start_hour:00`, then every `every_minutes` while the local time is before `end_hour:00`.
 - If an interval is larger than the active window, generate one interval poke at `start_hour:00`.
@@ -268,7 +268,7 @@ Maintain tests for:
 - Rejection of relative XDG env vars.
 - Schedule count and active-window bounds.
 - Minimum spacing enforcement.
-- All messages appearing when `pokes_per_day >= messages.len()`.
+- All random messages appearing when `random_per_day >= random.items.len()`.
 - New-day rollover replacing pending and clearing sent.
 - No-op before first due time.
 - Due-poke dequeue after successful send.
