@@ -45,6 +45,7 @@ pub enum PokeKind {
     #[default]
     Random,
     Scheduled,
+    Interval,
 }
 
 impl PokeKind {
@@ -52,6 +53,7 @@ impl PokeKind {
         match self {
             Self::Random => "random",
             Self::Scheduled => "scheduled",
+            Self::Interval => "interval",
         }
     }
 }

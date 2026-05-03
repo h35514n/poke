@@ -13,6 +13,8 @@ pub struct Config {
     pub messages: MessagesConfig,
     #[serde(default, skip_serializing_if = "ScheduledConfig::is_empty")]
     pub scheduled: ScheduledConfig,
+    #[serde(default, skip_serializing_if = "IntervalsConfig::is_empty")]
+    pub intervals: IntervalsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -46,6 +48,18 @@ impl ScheduledConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IntervalsConfig {
+    #[serde(default)]
+    pub items: Vec<IntervalMessage>,
+}
+
+impl IntervalsConfig {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct MessageTemplate {
     pub text: String,
@@ -68,6 +82,25 @@ pub struct ScheduledMessage {
     pub text: String,
     #[serde(default = "default_message_category")]
     pub category: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IntervalMessage {
+    pub every_minutes: u32,
+    pub text: String,
+    #[serde(default = "default_message_category")]
+    pub category: String,
+}
+
+#[cfg(test)]
+impl IntervalMessage {
+    pub fn new(every_minutes: u32, text: impl Into<String>, category: impl Into<String>) -> Self {
+        Self {
+            every_minutes,
+            text: text.into(),
+            category: category.into(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -181,6 +214,38 @@ impl Config {
         {
             bail!("scheduled.items categories must not be empty");
         }
+        if self
+            .intervals
+            .items
+            .iter()
+            .any(|item| item.every_minutes == 0)
+        {
+            bail!("intervals.items every_minutes must be greater than 0");
+        }
+        if self
+            .intervals
+            .items
+            .iter()
+            .any(|item| item.every_minutes < 5)
+        {
+            bail!("intervals.items every_minutes must be at least 5");
+        }
+        if self
+            .intervals
+            .items
+            .iter()
+            .any(|item| item.text.trim().is_empty())
+        {
+            bail!("intervals.items must not contain empty messages");
+        }
+        if self
+            .intervals
+            .items
+            .iter()
+            .any(|item| item.category.trim().is_empty())
+        {
+            bail!("intervals.items categories must not be empty");
+        }
         validate_density(&self.schedule)?;
         Ok(())
     }
@@ -226,6 +291,7 @@ pub fn default_config() -> Config {
             ],
         },
         scheduled: ScheduledConfig::default(),
+        intervals: IntervalsConfig::default(),
     }
 }
 
@@ -330,6 +396,28 @@ items = {scheduled}
         )
     }
 
+    fn base_toml_with_intervals(intervals: &str) -> String {
+        format!(
+            r#"
+[delivery]
+destination = "+15555555555"
+imsg_path = "/tmp/imsg"
+
+[schedule]
+start_hour = 9
+end_hour = 21
+pokes_per_day = 6
+min_spacing_minutes = 45
+
+[messages]
+items = ["Drink water."]
+
+[intervals]
+items = {intervals}
+"#
+        )
+    }
+
     #[test]
     fn default_config_is_valid_without_existing_imsg_for_init() {
         default_config().validate(false).unwrap();
@@ -405,6 +493,24 @@ items = {scheduled}
     }
 
     #[test]
+    fn interval_messages_parse_and_default_category() {
+        let config: Config = toml::from_str(&base_toml_with_intervals(
+            r#"[
+  { every_minutes = 60, text = "Drink water." },
+  { every_minutes = 90, text = "Stretch.", category = "mobility" }
+]"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            config.intervals.items,
+            vec![
+                IntervalMessage::new(60, "Drink water.", DEFAULT_MESSAGE_CATEGORY),
+                IntervalMessage::new(90, "Stretch.", "mobility"),
+            ]
+        );
+    }
+
+    #[test]
     fn infeasible_spacing_is_rejected() {
         let mut config = default_config();
         config.schedule.start_hour = 9;
@@ -445,5 +551,37 @@ items = {scheduled}
         )];
         let err = config.validate(false).unwrap_err().to_string();
         assert!(err.contains("scheduled.items categories must not be empty"));
+    }
+
+    #[test]
+    fn zero_interval_minutes_is_rejected() {
+        let mut config = default_config();
+        config.intervals.items = vec![IntervalMessage::new(0, "Drink water.", "hydration")];
+        let err = config.validate(false).unwrap_err().to_string();
+        assert!(err.contains("every_minutes must be greater than 0"));
+    }
+
+    #[test]
+    fn too_small_interval_minutes_is_rejected() {
+        let mut config = default_config();
+        config.intervals.items = vec![IntervalMessage::new(4, "Drink water.", "hydration")];
+        let err = config.validate(false).unwrap_err().to_string();
+        assert!(err.contains("every_minutes must be at least 5"));
+    }
+
+    #[test]
+    fn empty_interval_message_is_rejected() {
+        let mut config = default_config();
+        config.intervals.items = vec![IntervalMessage::new(60, "", "hydration")];
+        let err = config.validate(false).unwrap_err().to_string();
+        assert!(err.contains("intervals.items must not contain empty"));
+    }
+
+    #[test]
+    fn empty_interval_category_is_rejected() {
+        let mut config = default_config();
+        config.intervals.items = vec![IntervalMessage::new(60, "Drink water.", "")];
+        let err = config.validate(false).unwrap_err().to_string();
+        assert!(err.contains("intervals.items categories must not be empty"));
     }
 }

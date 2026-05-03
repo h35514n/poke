@@ -19,6 +19,7 @@ pub fn generate_for_date<R: Rng + ?Sized>(
     let interval = active_interval(date, config.schedule.start_hour, config.schedule.end_hour)?;
     let mut pending = generate_in_interval(config, recent_history, date, interval, rng)?;
     pending.extend(generate_scheduled_for_date(config, date)?);
+    pending.extend(generate_interval_for_date(config, date, interval)?);
     pending.sort_by_key(|poke| poke.at);
     Ok(pending)
 }
@@ -131,6 +132,31 @@ fn generate_scheduled_for_date(
             })
         })
         .collect()
+}
+
+fn generate_interval_for_date(
+    config: &Config,
+    date: NaiveDate,
+    interval: ActiveInterval,
+) -> anyhow::Result<Vec<PendingPoke>> {
+    let mut pending = Vec::new();
+    for (item_index, item) in config.intervals.items.iter().enumerate() {
+        let step = Duration::minutes(item.every_minutes.into());
+        let mut at = interval.start;
+        let mut slot_index = 0;
+        while at < interval.end {
+            pending.push(PendingPoke {
+                id: format!("{date}-interval-{item_index}-{slot_index}"),
+                at,
+                message: item.text.clone(),
+                category: item.category.clone(),
+                kind: PokeKind::Interval,
+            });
+            at += step;
+            slot_index += 1;
+        }
+    }
+    Ok(pending)
 }
 
 fn local_datetime(date: NaiveDate, hour: u32) -> anyhow::Result<DateTime<FixedOffset>> {
@@ -329,7 +355,7 @@ fn matches_recent_message(message: &MessageTemplate, recent: &RecentMessage) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{MessageTemplate, ScheduledMessage, default_config};
+    use crate::config::{IntervalMessage, MessageTemplate, ScheduledMessage, default_config};
     use chrono::NaiveTime;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
@@ -386,6 +412,35 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn generated_count_includes_interval_messages() {
+        let mut config = default_config();
+        config.schedule.start_hour = 9;
+        config.schedule.end_hour = 12;
+        config.schedule.pokes_per_day = 1;
+        config.intervals.items = vec![IntervalMessage::new(60, "Drink water.", "hydration")];
+        let mut rng = StdRng::seed_from_u64(13);
+        let pokes = generate_for_date(
+            &config,
+            &[],
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+        let interval_pokes: Vec<&PendingPoke> = pokes
+            .iter()
+            .filter(|poke| poke.kind == PokeKind::Interval)
+            .collect();
+        assert_eq!(interval_pokes.len(), 3);
+        assert_eq!(
+            pokes.len(),
+            config.schedule.pokes_per_day + interval_pokes.len()
+        );
+        assert_eq!(interval_pokes[0].at.hour(), 9);
+        assert_eq!(interval_pokes[1].at.hour(), 10);
+        assert_eq!(interval_pokes[2].at.hour(), 11);
     }
 
     #[test]
@@ -453,6 +508,93 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn interval_messages_are_start_inclusive_and_end_exclusive() {
+        let mut config = default_config();
+        config.schedule.start_hour = 9;
+        config.schedule.end_hour = 11;
+        config.schedule.pokes_per_day = 1;
+        config.intervals.items = vec![IntervalMessage::new(30, "Drink water.", "hydration")];
+        let mut rng = StdRng::seed_from_u64(17);
+        let pokes = generate_for_date(
+            &config,
+            &[],
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+        let times: Vec<String> = pokes
+            .iter()
+            .filter(|poke| poke.kind == PokeKind::Interval)
+            .map(|poke| poke.at.format("%H:%M").to_string())
+            .collect();
+        assert_eq!(times, vec!["09:00", "09:30", "10:00", "10:30"]);
+    }
+
+    #[test]
+    fn interval_larger_than_window_generates_start_only() {
+        let mut config = default_config();
+        config.schedule.start_hour = 9;
+        config.schedule.end_hour = 10;
+        config.schedule.pokes_per_day = 1;
+        config.intervals.items = vec![IntervalMessage::new(120, "Drink water.", "hydration")];
+        let mut rng = StdRng::seed_from_u64(19);
+        let pokes = generate_for_date(
+            &config,
+            &[],
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+        let interval_pokes: Vec<&PendingPoke> = pokes
+            .iter()
+            .filter(|poke| poke.kind == PokeKind::Interval)
+            .collect();
+        assert_eq!(interval_pokes.len(), 1);
+        assert_eq!(interval_pokes[0].at.format("%H:%M").to_string(), "09:00");
+    }
+
+    #[test]
+    fn interval_messages_do_not_affect_minimum_spacing() {
+        let mut config = default_config();
+        config.schedule.pokes_per_day = 1;
+        config.schedule.min_spacing_minutes = 120;
+        config.intervals.items = vec![IntervalMessage::new(5, "Drink water.", "hydration")];
+        let mut rng = StdRng::seed_from_u64(23);
+        let pokes = generate_for_date(
+            &config,
+            &[],
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+        assert!(pokes.iter().any(|poke| poke.kind == PokeKind::Interval
+            && poke.at.format("%H:%M").to_string() == "09:00"));
+    }
+
+    #[test]
+    fn merged_pending_queue_is_sorted() {
+        let mut config = default_config();
+        config.schedule.start_hour = 9;
+        config.schedule.end_hour = 12;
+        config.schedule.pokes_per_day = 1;
+        config.scheduled.items = vec![ScheduledMessage::new(
+            NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
+            "Early fixed.",
+            "fixed",
+        )];
+        config.intervals.items = vec![IntervalMessage::new(60, "Drink water.", "hydration")];
+        let mut rng = StdRng::seed_from_u64(29);
+        let pokes = generate_for_date(
+            &config,
+            &[],
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+        assert!(pokes.windows(2).all(|pair| pair[0].at <= pair[1].at));
     }
 
     #[test]

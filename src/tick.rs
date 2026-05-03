@@ -156,7 +156,11 @@ fn earliest_due(
         .iter()
         .enumerate()
         .find(|(_, poke)| {
-            poke.at <= now && (poke.kind == PokeKind::Scheduled || within_active_window)
+            poke.at <= now
+                && match poke.kind {
+                    PokeKind::Scheduled => true,
+                    PokeKind::Random | PokeKind::Interval => within_active_window,
+                }
         })
         .map(|(index, poke)| (index, poke.clone()))
 }
@@ -419,6 +423,71 @@ mod tests {
         assert_eq!(sender.calls, vec!["message fixed"]);
         assert!(state.pending.is_empty());
         assert_eq!(state.sent[0].kind, PokeKind::Scheduled);
+        assert!(state.recent_history.is_empty());
+    }
+
+    #[test]
+    fn interval_poke_sends_inside_active_window() {
+        let config = default_config();
+        let mut state = State {
+            last_schedule_date: Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap()),
+            pending: vec![poke_with_kind("interval", dt(10, 0), PokeKind::Interval)],
+            sent: vec![],
+            recent_history: vec![],
+        };
+        let mut sender = FakeSender {
+            status_code: Some(0),
+            calls: vec![],
+        };
+        let outcome = process_tick(&config, &mut state, dt(10, 5), &mut sender).unwrap();
+        assert!(outcome.state_changed);
+        assert!(outcome.sent_message);
+        assert_eq!(sender.calls, vec!["message interval"]);
+        assert!(state.pending.is_empty());
+        assert_eq!(state.sent[0].kind, PokeKind::Interval);
+        assert!(state.recent_history.is_empty());
+    }
+
+    #[test]
+    fn interval_poke_does_not_send_after_active_window() {
+        let config = default_config();
+        let mut state = State {
+            last_schedule_date: Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap()),
+            pending: vec![poke_with_kind("interval", dt(20, 0), PokeKind::Interval)],
+            sent: vec![],
+            recent_history: vec![],
+        };
+        let mut sender = FakeSender {
+            status_code: Some(0),
+            calls: vec![],
+        };
+        let outcome = process_tick(&config, &mut state, dt(21, 30), &mut sender).unwrap();
+        assert!(!outcome.state_changed);
+        assert!(!outcome.sent_message);
+        assert!(sender.calls.is_empty());
+        assert_eq!(
+            state.pending,
+            vec![poke_with_kind("interval", dt(20, 0), PokeKind::Interval)]
+        );
+    }
+
+    #[test]
+    fn failed_interval_send_preserves_pending_queue() {
+        let config = default_config();
+        let original = vec![poke_with_kind("interval", dt(10, 0), PokeKind::Interval)];
+        let mut state = State {
+            last_schedule_date: Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap()),
+            pending: original.clone(),
+            sent: vec![],
+            recent_history: vec![],
+        };
+        let mut sender = FakeSender {
+            status_code: Some(1),
+            calls: vec![],
+        };
+        assert!(process_tick(&config, &mut state, dt(10, 5), &mut sender).is_err());
+        assert_eq!(state.pending, original);
+        assert!(state.sent.is_empty());
         assert!(state.recent_history.is_empty());
     }
 

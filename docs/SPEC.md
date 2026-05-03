@@ -60,6 +60,11 @@ items = [
 items = [
   { time = "15:00", text = "Send the afternoon check-in.", category = "fixed" }
 ]
+
+[intervals]
+items = [
+  { every_minutes = 60, text = "Drink water.", category = "hydration" }
+]
 ```
 
 Validation:
@@ -81,10 +86,16 @@ Validation:
 - Scheduled item time should be documented as `"HH:MM"` and may also accept friendly `"h:MMam/pm"` input.
 - Scheduled item text must not be empty.
 - Scheduled item categories default to `"default"` and must not be empty.
+- `intervals.items` is optional and contains fixed-interval messages generated across the active window.
+- Each interval item has required `every_minutes` and `text`, plus optional `category`.
+- Interval item `every_minutes` must be at least 5.
+- Interval item text must not be empty.
+- Interval item categories default to `"default"` and must not be empty.
 - The configured active window must be large enough for the requested poke count and minimum spacing.
 
 The active window is local wall-clock time `[start_hour, end_hour)`.
 Scheduled items are exempt from `pokes_per_day`, `min_spacing_minutes`, and the active window.
+Interval items are exempt from `pokes_per_day`, `min_spacing_minutes`, random rotation, and recent-history tracking, but are bound to the active window.
 
 ## State
 
@@ -126,10 +137,10 @@ State rules:
 - `sent` only needs to retain the current day.
 - `recent_history` retains a bounded recent history of successful sends across day boundaries.
 - On new-day generation, replace `pending` and clear `sent`.
-- Poke IDs are deterministic within the day: random pokes use `YYYY-MM-DD-random-index`; scheduled pokes use `YYYY-MM-DD-scheduled-index`.
+- Poke IDs are deterministic within the day: random pokes use `YYYY-MM-DD-random-index`; scheduled pokes use `YYYY-MM-DD-scheduled-index`; interval pokes use `YYYY-MM-DD-interval-itemIndex-slotIndex`.
 - State writes are atomic: write temp file, fsync, rename, then best-effort fsync the parent directory.
 - `tick` holds the state lock for the full operation.
-- `kind` is `"random"` or `"scheduled"` and defaults to `"random"` for older state files.
+- `kind` is `"random"`, `"scheduled"`, or `"interval"` and defaults to `"random"` for older state files.
 
 ## Schedule Generation
 
@@ -146,8 +157,10 @@ State rules:
 - Carry a bounded recent successful-send history across day boundaries so the first poke of a new day is not a hard reset.
 - If `pokes_per_day >= messages.items.len()`, every configured message appears at least once.
 - Generate every configured scheduled item for the local date at its configured local wall-clock time.
-- Merge random and scheduled pokes into one pending queue sorted by scheduled time.
-- Scheduled items do not affect random message rotation or recent-history tracking.
+- Generate each configured interval item at `start_hour:00`, then every `every_minutes` while the local time is before `end_hour:00`.
+- If an interval is larger than the active window, generate one interval poke at `start_hour:00`.
+- Merge random, scheduled, and interval pokes into one pending queue sorted by scheduled time.
+- Scheduled and interval items do not affect random message rotation or recent-history tracking.
 
 ## Tick Behavior
 
@@ -157,13 +170,14 @@ State rules:
 4. Load state or initialize empty state.
 5. Get the current timezone-aware local datetime.
 6. If `last_schedule_date != today`, generate today's schedule, replace `pending`, clear `sent`, and save state.
-7. Find the earliest pending poke with `at <= now`; random pokes are eligible only inside the active window, and scheduled pokes are eligible regardless of active window.
+7. Find the earliest pending poke with `at <= now`; random and interval pokes are eligible only inside the active window, and scheduled pokes are eligible regardless of active window.
 8. If none exists, exit 0.
 9. Send exactly one message.
 10. On success, move the sent poke to `sent`, drop any other pending pokes with `at <= now`, save state, and exit 0.
 11. On failure, log stdout/stderr/status, preserve `pending`, do not append to `sent`, and exit nonzero.
 
 If the first tick of a day happens after `end_hour`, still generate and persist that day's schedule, then send a due scheduled poke if one exists.
+If multiple interval pokes are overdue, the existing overdue-drop behavior applies: send the earliest eligible poke and drop other overdue pokes after success.
 
 ## Delivery
 

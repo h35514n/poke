@@ -21,3 +21,8 @@ items = [
 items = [
   { time = "15:00", text = "Send the afternoon check-in.", category = "fixed" }
 ]
+
+[intervals]
+items = [
+  { every_minutes = 60, text = "Drink water.", category = "hydration" }
+]
