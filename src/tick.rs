@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::delivery::{DeliveryOutput, ImsgSender, Sender};
 use crate::paths::PokePaths;
 use crate::schedule;
-use crate::state::{self, PendingPoke, RecentMessage, SentPoke, State, StateLock};
+use crate::state::{self, PendingPoke, PokeKind, RecentMessage, SentPoke, State, StateLock};
 use anyhow::{Context, bail};
 use chrono::{DateTime, FixedOffset, Local};
 
@@ -45,15 +45,24 @@ pub fn show(paths: &PokePaths) -> anyhow::Result<String> {
     output.push_str("pending:\n");
     for poke in &state.pending {
         output.push_str(&format!(
-            "  {} {} [{}] {}\n",
-            poke.id, poke.at, poke.category, poke.message
+            "  {} {} {} [{}] {}\n",
+            poke.id,
+            poke.at,
+            poke.kind.as_str(),
+            poke.category,
+            poke.message
         ));
     }
     output.push_str("last_sent:\n");
     if let Some(sent) = state.sent.last() {
         output.push_str(&format!(
-            "  {} scheduled={} sent={} [{}] {}\n",
-            sent.id, sent.scheduled_at, sent.sent_at, sent.category, sent.message
+            "  {} scheduled={} sent={} {} [{}] {}\n",
+            sent.id,
+            sent.scheduled_at,
+            sent.sent_at,
+            sent.kind.as_str(),
+            sent.category,
+            sent.message
         ));
     } else {
         output.push_str("  none\n");
@@ -79,15 +88,13 @@ pub fn process_tick<S: Sender>(
         state_changed = true;
     }
 
-    if !schedule::is_within_active_window(now, config.schedule.start_hour, config.schedule.end_hour)
-    {
-        return Ok(TickOutcome {
-            state_changed,
-            sent_message: false,
-        });
-    }
+    let within_active_window = schedule::is_within_active_window(
+        now,
+        config.schedule.start_hour,
+        config.schedule.end_hour,
+    );
 
-    let Some((due_index, due)) = earliest_due(&state.pending, now) else {
+    let Some((due_index, due)) = earliest_due(&state.pending, now, within_active_window) else {
         return Ok(TickOutcome {
             state_changed,
             sent_message: false,
@@ -114,8 +121,11 @@ pub fn process_tick<S: Sender>(
         sent_at: now,
         message: sent_poke.message,
         category: sent_poke.category.clone(),
+        kind: sent_poke.kind,
     });
-    record_recent_send(&mut state.recent_history, recent_message);
+    if sent_poke.kind == PokeKind::Random {
+        record_recent_send(&mut state.recent_history, recent_message);
+    }
     Ok(TickOutcome {
         state_changed: true,
         sent_message: true,
@@ -140,11 +150,14 @@ pub fn regenerate_today(
 fn earliest_due(
     pending: &[PendingPoke],
     now: DateTime<FixedOffset>,
+    within_active_window: bool,
 ) -> Option<(usize, PendingPoke)> {
     pending
         .iter()
         .enumerate()
-        .find(|(_, poke)| poke.at <= now)
+        .find(|(_, poke)| {
+            poke.at <= now && (poke.kind == PokeKind::Scheduled || within_active_window)
+        })
         .map(|(index, poke)| (index, poke.clone()))
 }
 
@@ -196,11 +209,16 @@ mod tests {
     }
 
     fn poke(id: &str, at: DateTime<FixedOffset>) -> PendingPoke {
+        poke_with_kind(id, at, PokeKind::Random)
+    }
+
+    fn poke_with_kind(id: &str, at: DateTime<FixedOffset>, kind: PokeKind) -> PendingPoke {
         PendingPoke {
             id: id.to_string(),
             at,
             message: format!("message {id}"),
             category: "default".to_string(),
+            kind,
         }
     }
 
@@ -304,6 +322,7 @@ mod tests {
                 sent_at: dt(9, 5) - Duration::days(1),
                 message: "old".to_string(),
                 category: "default".to_string(),
+                kind: PokeKind::Random,
             }],
             recent_history: vec![RecentMessage::new("old", "default")],
         };
@@ -359,5 +378,69 @@ mod tests {
         assert_eq!(history.len(), RECENT_HISTORY_LIMIT);
         assert_eq!(history.first().unwrap().message, "message 2");
         assert_eq!(history.last().unwrap().message, "message 9");
+    }
+
+    #[test]
+    fn random_poke_does_not_send_after_active_window() {
+        let config = default_config();
+        let mut state = State {
+            last_schedule_date: Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap()),
+            pending: vec![poke("a", dt(20, 0))],
+            sent: vec![],
+            recent_history: vec![],
+        };
+        let mut sender = FakeSender {
+            status_code: Some(0),
+            calls: vec![],
+        };
+        let outcome = process_tick(&config, &mut state, dt(21, 30), &mut sender).unwrap();
+        assert!(!outcome.state_changed);
+        assert!(!outcome.sent_message);
+        assert!(sender.calls.is_empty());
+        assert_eq!(state.pending, vec![poke("a", dt(20, 0))]);
+    }
+
+    #[test]
+    fn scheduled_poke_sends_after_active_window() {
+        let config = default_config();
+        let mut state = State {
+            last_schedule_date: Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap()),
+            pending: vec![poke_with_kind("fixed", dt(21, 15), PokeKind::Scheduled)],
+            sent: vec![],
+            recent_history: vec![],
+        };
+        let mut sender = FakeSender {
+            status_code: Some(0),
+            calls: vec![],
+        };
+        let outcome = process_tick(&config, &mut state, dt(21, 30), &mut sender).unwrap();
+        assert!(outcome.state_changed);
+        assert!(outcome.sent_message);
+        assert_eq!(sender.calls, vec!["message fixed"]);
+        assert!(state.pending.is_empty());
+        assert_eq!(state.sent[0].kind, PokeKind::Scheduled);
+        assert!(state.recent_history.is_empty());
+    }
+
+    #[test]
+    fn earliest_due_still_limits_tick_to_one_message() {
+        let config = default_config();
+        let mut state = State {
+            last_schedule_date: Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap()),
+            pending: vec![
+                poke_with_kind("fixed", dt(9, 0), PokeKind::Scheduled),
+                poke("random", dt(9, 5)),
+            ],
+            sent: vec![],
+            recent_history: vec![],
+        };
+        let mut sender = FakeSender {
+            status_code: Some(0),
+            calls: vec![],
+        };
+        process_tick(&config, &mut state, dt(9, 10), &mut sender).unwrap();
+        assert_eq!(sender.calls, vec!["message fixed"]);
+        assert!(state.pending.is_empty());
+        assert_eq!(state.sent.len(), 1);
     }
 }

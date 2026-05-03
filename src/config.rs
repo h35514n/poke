@@ -1,5 +1,6 @@
 use anyhow::{Context, bail};
-use serde::{Deserialize, Deserializer, Serialize};
+use chrono::NaiveTime;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,6 +11,8 @@ pub struct Config {
     pub delivery: DeliveryConfig,
     pub schedule: ScheduleConfig,
     pub messages: MessagesConfig,
+    #[serde(default, skip_serializing_if = "ScheduledConfig::is_empty")]
+    pub scheduled: ScheduledConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,6 +34,18 @@ pub struct MessagesConfig {
     pub items: Vec<MessageTemplate>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduledConfig {
+    #[serde(default)]
+    pub items: Vec<ScheduledMessage>,
+}
+
+impl ScheduledConfig {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct MessageTemplate {
     pub text: String,
@@ -40,6 +55,26 @@ pub struct MessageTemplate {
 impl MessageTemplate {
     pub fn new(text: impl Into<String>, category: impl Into<String>) -> Self {
         Self {
+            text: text.into(),
+            category: category.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ScheduledMessage {
+    #[serde(with = "scheduled_time_format")]
+    pub time: NaiveTime,
+    pub text: String,
+    #[serde(default = "default_message_category")]
+    pub category: String,
+}
+
+#[cfg(test)]
+impl ScheduledMessage {
+    pub fn new(time: NaiveTime, text: impl Into<String>, category: impl Into<String>) -> Self {
+        Self {
+            time,
             text: text.into(),
             category: category.into(),
         }
@@ -130,6 +165,22 @@ impl Config {
         {
             bail!("messages.items categories must not be empty");
         }
+        if self
+            .scheduled
+            .items
+            .iter()
+            .any(|item| item.text.trim().is_empty())
+        {
+            bail!("scheduled.items must not contain empty messages");
+        }
+        if self
+            .scheduled
+            .items
+            .iter()
+            .any(|item| item.category.trim().is_empty())
+        {
+            bail!("scheduled.items categories must not be empty");
+        }
         validate_density(&self.schedule)?;
         Ok(())
     }
@@ -174,6 +225,7 @@ pub fn default_config() -> Config {
                 MessageTemplate::new("Do ten air squats.", "movement"),
             ],
         },
+        scheduled: ScheduledConfig::default(),
     }
 }
 
@@ -192,6 +244,45 @@ pub fn write_default_config_if_absent(path: &Path) -> anyhow::Result<()> {
     fs::write(path, default_config_toml()?)
         .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
+}
+
+fn default_message_category() -> String {
+    DEFAULT_MESSAGE_CATEGORY.to_string()
+}
+
+fn parse_scheduled_time(input: &str) -> Option<NaiveTime> {
+    let trimmed = input.trim();
+    if let Ok(time) = NaiveTime::parse_from_str(trimmed, "%H:%M") {
+        return Some(time);
+    }
+    let compact = trimmed.to_ascii_lowercase().replace(' ', "");
+    for format in ["%I:%M%P", "%I%P"] {
+        if let Ok(time) = NaiveTime::parse_from_str(&compact, format) {
+            return Some(time);
+        }
+    }
+    None
+}
+
+mod scheduled_time_format {
+    use super::*;
+    use serde::de::Error;
+
+    pub fn serialize<S>(time: &NaiveTime, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&time.format("%H:%M").to_string())
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<NaiveTime, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        parse_scheduled_time(&raw)
+            .ok_or_else(|| D::Error::custom("scheduled time must be HH:MM or h:MMam/pm"))
+    }
 }
 
 #[cfg(test)]
@@ -213,6 +304,28 @@ min_spacing_minutes = 45
 
 [messages]
 items = {messages}
+"#
+        )
+    }
+
+    fn base_toml_with_scheduled(scheduled: &str) -> String {
+        format!(
+            r#"
+[delivery]
+destination = "+15555555555"
+imsg_path = "/tmp/imsg"
+
+[schedule]
+start_hour = 9
+end_hour = 21
+pokes_per_day = 6
+min_spacing_minutes = 45
+
+[messages]
+items = ["Drink water."]
+
+[scheduled]
+items = {scheduled}
 "#
         )
     }
@@ -256,6 +369,42 @@ items = {messages}
     }
 
     #[test]
+    fn scheduled_messages_parse_and_default_category() {
+        let config: Config = toml::from_str(&base_toml_with_scheduled(
+            r#"[
+  { time = "15:00", text = "Afternoon check-in." },
+  { time = "3:30pm", text = "Later check-in.", category = "fixed" }
+]"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            config.scheduled.items,
+            vec![
+                ScheduledMessage::new(
+                    NaiveTime::from_hms_opt(15, 0, 0).unwrap(),
+                    "Afternoon check-in.",
+                    DEFAULT_MESSAGE_CATEGORY
+                ),
+                ScheduledMessage::new(
+                    NaiveTime::from_hms_opt(15, 30, 0).unwrap(),
+                    "Later check-in.",
+                    "fixed"
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_scheduled_time_is_rejected() {
+        let err = toml::from_str::<Config>(&base_toml_with_scheduled(
+            r#"[{ time = "noonish", text = "Afternoon check-in." }]"#,
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("scheduled time"));
+    }
+
+    #[test]
     fn infeasible_spacing_is_rejected() {
         let mut config = default_config();
         config.schedule.start_hour = 9;
@@ -272,5 +421,29 @@ items = {messages}
         config.messages.items = vec![MessageTemplate::new("Drink water.", "")];
         let err = config.validate(false).unwrap_err().to_string();
         assert!(err.contains("categories must not be empty"));
+    }
+
+    #[test]
+    fn empty_scheduled_message_is_rejected() {
+        let mut config = default_config();
+        config.scheduled.items = vec![ScheduledMessage::new(
+            NaiveTime::from_hms_opt(15, 0, 0).unwrap(),
+            "",
+            "fixed",
+        )];
+        let err = config.validate(false).unwrap_err().to_string();
+        assert!(err.contains("scheduled.items must not contain empty"));
+    }
+
+    #[test]
+    fn empty_scheduled_category_is_rejected() {
+        let mut config = default_config();
+        config.scheduled.items = vec![ScheduledMessage::new(
+            NaiveTime::from_hms_opt(15, 0, 0).unwrap(),
+            "Afternoon check-in.",
+            "",
+        )];
+        let err = config.validate(false).unwrap_err().to_string();
+        assert!(err.contains("scheduled.items categories must not be empty"));
     }
 }

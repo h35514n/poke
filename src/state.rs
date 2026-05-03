@@ -23,6 +23,8 @@ pub struct PendingPoke {
     pub message: String,
     #[serde(default = "default_category")]
     pub category: String,
+    #[serde(default)]
+    pub kind: PokeKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -33,6 +35,25 @@ pub struct SentPoke {
     pub message: String,
     #[serde(default = "default_category")]
     pub category: String,
+    #[serde(default)]
+    pub kind: PokeKind,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PokeKind {
+    #[default]
+    Random,
+    Scheduled,
+}
+
+impl PokeKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Random => "random",
+            Self::Scheduled => "scheduled",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -169,6 +190,8 @@ mod tests {
         let state = load_state(&path).unwrap();
         assert_eq!(state.pending[0].category, DEFAULT_MESSAGE_CATEGORY);
         assert_eq!(state.sent[0].category, DEFAULT_MESSAGE_CATEGORY);
+        assert_eq!(state.pending[0].kind, PokeKind::Random);
+        assert_eq!(state.sent[0].kind, PokeKind::Random);
         assert!(state.recent_history.is_empty());
     }
 }

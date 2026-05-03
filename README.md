@@ -58,12 +58,23 @@ items = [
   { text = "Walk around for two minutes.", category = "movement" },
   { text = "Do ten air squats.", category = "movement" }
 ]
+
+[scheduled]
+items = [
+  { time = "15:00", text = "Send the afternoon check-in.", category = "fixed" }
+]
 ```
 
 The same starter config is also available at `assets/config.toml.sample`.
 
-`items` can also remain a plain string list. Plain strings are normalized to the
-default category `"default"`.
+`messages.items` is the random message pool. Items can also remain a plain
+string list. Plain strings are normalized to the default category `"default"`.
+
+`scheduled.items` is optional. These are explicit daily messages delivered at
+the configured local wall-clock time. They do not count toward `pokes_per_day`,
+do not affect `min_spacing_minutes`, and can send outside the active window.
+Use `"HH:MM"` times such as `"15:00"`; friendlier inputs such as `"3:00pm"` are
+also accepted.
 
 `imsg_path` must be absolute. `poke tick` calls:
 
@@ -124,8 +135,8 @@ Behavior
 --------
 
 At the first tick of each local calendar day, `poke` generates `pokes_per_day`
-scheduled times inside `[start_hour, end_hour)`. It divides the active window
-into equal segments, picks one random timestamp per segment, and enforces
+random scheduled times inside `[start_hour, end_hour)`. It divides the active
+window into equal segments, picks one random timestamp per segment, and enforces
 `min_spacing_minutes`.
 
 For each generated poke, `poke` chooses a category sequence that prefers
@@ -137,6 +148,9 @@ again avoiding immediate repeats when possible.
 When `pokes_per_day` is at least as large as the number of configured messages,
 `poke` still guarantees that every configured message appears at least once each
 day before it repeats any of them.
+
+Explicit `scheduled.items` are added to the same pending queue for the day, but
+they stand outside the random rotation and recent-history logic.
 
 If multiple pokes are overdue when a tick runs, `poke` sends the earliest due
 poke and drops the other missed overdue pokes after the send succeeds. Future

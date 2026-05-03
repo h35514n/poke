@@ -16,3 +16,8 @@ items = [
   { text = "Walk around for two minutes.", category = "movement" },
   { text = "Do ten air squats.", category = "movement" }
 ]
+
+[scheduled]
+items = [
+  { time = "15:00", text = "Send the afternoon check-in.", category = "fixed" }
+]

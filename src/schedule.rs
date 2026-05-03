@@ -1,5 +1,5 @@
 use crate::config::{Config, MessageTemplate};
-use crate::state::{PendingPoke, RecentMessage};
+use crate::state::{PendingPoke, PokeKind, RecentMessage};
 use anyhow::{Context, bail};
 use chrono::{
     DateTime, Datelike, Duration, FixedOffset, Local, LocalResult, NaiveDate, TimeZone, Timelike,
@@ -17,7 +17,10 @@ pub fn generate_for_date<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> anyhow::Result<Vec<PendingPoke>> {
     let interval = active_interval(date, config.schedule.start_hour, config.schedule.end_hour)?;
-    generate_in_interval(config, recent_history, date, interval, rng)
+    let mut pending = generate_in_interval(config, recent_history, date, interval, rng)?;
+    pending.extend(generate_scheduled_for_date(config, date)?);
+    pending.sort_by_key(|poke| poke.at);
+    Ok(pending)
 }
 
 fn generate_in_interval<R: Rng + ?Sized>(
@@ -60,10 +63,11 @@ fn generate_in_interval<R: Rng + ?Sized>(
                 .into_iter()
                 .enumerate()
                 .map(|(index, at)| PendingPoke {
-                    id: format!("{date}-{index}"),
+                    id: format!("{date}-random-{index}"),
                     at,
                     message: messages[index].text.clone(),
                     category: messages[index].category.clone(),
+                    kind: PokeKind::Random,
                 })
                 .collect());
         }
@@ -108,11 +112,48 @@ pub struct ActiveInterval {
     pub end: DateTime<FixedOffset>,
 }
 
+fn generate_scheduled_for_date(
+    config: &Config,
+    date: NaiveDate,
+) -> anyhow::Result<Vec<PendingPoke>> {
+    config
+        .scheduled
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            Ok(PendingPoke {
+                id: format!("{date}-scheduled-{index}"),
+                at: local_datetime_at_time(date, item.time)?,
+                message: item.text.clone(),
+                category: item.category.clone(),
+                kind: PokeKind::Scheduled,
+            })
+        })
+        .collect()
+}
+
 fn local_datetime(date: NaiveDate, hour: u32) -> anyhow::Result<DateTime<FixedOffset>> {
-    let local = match Local.with_ymd_and_hms(date.year(), date.month(), date.day(), hour, 0, 0) {
+    let time = chrono::NaiveTime::from_hms_opt(hour, 0, 0)
+        .with_context(|| format!("invalid local hour {hour:02}:00"))?;
+    local_datetime_at_time(date, time)
+}
+
+fn local_datetime_at_time(
+    date: NaiveDate,
+    time: chrono::NaiveTime,
+) -> anyhow::Result<DateTime<FixedOffset>> {
+    let local = match Local.with_ymd_and_hms(
+        date.year(),
+        date.month(),
+        date.day(),
+        time.hour(),
+        time.minute(),
+        time.second(),
+    ) {
         LocalResult::Single(dt) => dt,
         LocalResult::Ambiguous(first, _) => first,
-        LocalResult::None => bail!("local time {date} {hour:02}:00 does not exist"),
+        LocalResult::None => bail!("local time {date} {} does not exist", time.format("%H:%M")),
     };
     Ok(local.fixed_offset())
 }
@@ -288,7 +329,8 @@ fn matches_recent_message(message: &MessageTemplate, recent: &RecentMessage) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{MessageTemplate, default_config};
+    use crate::config::{MessageTemplate, ScheduledMessage, default_config};
+    use chrono::NaiveTime;
     use rand::SeedableRng;
     use rand::rngs::StdRng;
 
@@ -308,6 +350,42 @@ mod tests {
         )
         .unwrap();
         assert_eq!(pokes.len(), config.schedule.pokes_per_day);
+    }
+
+    #[test]
+    fn generated_count_includes_scheduled_messages() {
+        let mut config = default_config();
+        config.scheduled.items = vec![
+            ScheduledMessage::new(
+                NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
+                "Before window.",
+                "fixed",
+            ),
+            ScheduledMessage::new(
+                NaiveTime::from_hms_opt(22, 0, 0).unwrap(),
+                "After window.",
+                "fixed",
+            ),
+        ];
+        let mut rng = StdRng::seed_from_u64(1);
+        let pokes = generate_for_date(
+            &config,
+            &[],
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(
+            pokes.len(),
+            config.schedule.pokes_per_day + config.scheduled.items.len()
+        );
+        assert_eq!(
+            pokes
+                .iter()
+                .filter(|poke| poke.kind == PokeKind::Scheduled)
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -341,6 +419,40 @@ mod tests {
         for pair in pokes.windows(2) {
             assert!(pair[1].at - pair[0].at >= Duration::minutes(90));
         }
+    }
+
+    #[test]
+    fn scheduled_messages_do_not_affect_minimum_spacing() {
+        let mut config = default_config();
+        config.schedule.pokes_per_day = 1;
+        config.schedule.min_spacing_minutes = 120;
+        config.scheduled.items = vec![
+            ScheduledMessage::new(
+                NaiveTime::from_hms_opt(15, 0, 0).unwrap(),
+                "First fixed.",
+                "fixed",
+            ),
+            ScheduledMessage::new(
+                NaiveTime::from_hms_opt(15, 1, 0).unwrap(),
+                "Second fixed.",
+                "fixed",
+            ),
+        ];
+        let mut rng = StdRng::seed_from_u64(5);
+        let pokes = generate_for_date(
+            &config,
+            &[],
+            NaiveDate::from_ymd_opt(2026, 4, 19).unwrap(),
+            &mut rng,
+        )
+        .unwrap();
+        assert_eq!(
+            pokes
+                .iter()
+                .filter(|poke| poke.kind == PokeKind::Scheduled)
+                .count(),
+            2
+        );
     }
 
     #[test]
