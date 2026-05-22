@@ -341,7 +341,7 @@ mod tests {
             state.last_schedule_date,
             Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap())
         );
-        assert_eq!(state.pending.len(), config.schedule.random_per_day);
+        assert_eq!(state.pending.len(), config.schedule.random_per_day.default);
         assert!(state.sent.is_empty());
         assert_eq!(
             state.recent_history,

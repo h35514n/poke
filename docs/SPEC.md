@@ -44,8 +44,15 @@ imsg_path = "/opt/homebrew/bin/imsg"
 [schedule]
 start_hour = 9
 end_hour = 21
-random_per_day = 6
 random_min_spacing_minutes = 45
+
+[schedule.random_per_day]
+default = 6                # baseline used for any weekday not overridden
+jitter  = 2                # optional symmetric ± jitter, default 0
+
+[schedule.random_per_day.weekday]   # all keys optional
+saturday = 3
+sunday   = 3
 
 [random]
 items = [
@@ -74,7 +81,11 @@ Validation:
 - `schedule.start_hour` must be `0..=23`.
 - `schedule.end_hour` must be `1..=24`.
 - `schedule.end_hour` must be greater than `schedule.start_hour`.
-- `schedule.random_per_day` must be greater than zero.
+- `schedule.random_per_day` is a table, not a scalar. Legacy scalar `random_per_day = N` is rejected.
+- `schedule.random_per_day.default` must be greater than zero.
+- `schedule.random_per_day.jitter` is optional, defaults to zero, and must not be negative.
+- `schedule.random_per_day.weekday.{monday..sunday}` overrides are each optional and must be greater than zero when present.
+- The active window must accommodate the maximum possible daily count (`max(default, weekday overrides) + jitter`) under `random_min_spacing_minutes`.
 - `schedule.random_min_spacing_minutes` must not be negative.
 - `random.items` must contain at least one non-empty message.
 - Each message item may be a plain string or an inline table with `text` and optional `category`.
@@ -144,7 +155,8 @@ State rules:
 
 ## Schedule Generation
 
-- Generate exactly `random_per_day` random pokes for the local date.
+- Compute the day's random count as `baseline + uniform_int(-jitter, jitter)` clamped to at least 1, where `baseline` is `random_per_day.weekday.<today>` if set else `random_per_day.default`. Selected once per schedule generation.
+- Generate exactly that many random pokes for the local date.
 - Build the active interval from local `start_hour:00` to local `end_hour:00`.
 - Split the interval into `random_per_day` contiguous segments.
 - Sample one timestamp uniformly within each segment.
@@ -155,7 +167,7 @@ State rules:
 - Avoid consecutive duplicate messages when an alternative message exists.
 - Prefer unseen messages until each configured message has appeared once, when the daily poke count allows it.
 - Carry a bounded recent successful-send history across day boundaries so the first poke of a new day is not a hard reset.
-- If `random_per_day >= random.items.len()`, every configured random message appears at least once.
+- If the day's random count is at least `random.items.len()`, every configured random message appears at least once.
 - Generate every configured scheduled item for the local date at its configured local wall-clock time.
 - Generate each configured interval item at `start_hour:00`, then every `every_minutes` while the local time is before `end_hour:00`.
 - If an interval is larger than the active window, generate one interval poke at `start_hour:00`.

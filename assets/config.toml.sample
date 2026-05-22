@@ -5,8 +5,15 @@ imsg_path = "/opt/homebrew/bin/imsg"
 [schedule]
 start_hour = 9
 end_hour = 21
-random_per_day = 6
 random_min_spacing_minutes = 45
+
+[schedule.random_per_day]
+default = 6      # baseline count for any weekday without an override
+jitter = 2       # optional symmetric ± jitter applied each day; omit for none
+
+[schedule.random_per_day.weekday]
+saturday = 3
+sunday = 3
 
 [random]
 items = [

@@ -47,8 +47,15 @@ imsg_path = "/opt/homebrew/bin/imsg"
 [schedule]
 start_hour = 9
 end_hour = 21
-random_per_day = 6
 random_min_spacing_minutes = 45
+
+[schedule.random_per_day]
+default = 6      # baseline count for any weekday without an override
+jitter = 2       # optional symmetric ± jitter applied each day; omit for none
+
+[schedule.random_per_day.weekday]
+saturday = 3
+sunday = 3
 
 [random]
 items = [
@@ -75,8 +82,15 @@ The same starter config is also available at `assets/config.toml.sample`.
 `random.items` is the random message pool. Items can also remain a plain
 string list. Plain strings are normalized to the default category `"default"`.
 
+`schedule.random_per_day` is a table. `default` is the baseline number of random
+pokes per day; optional `weekday.{monday..sunday}` keys override the baseline
+for specific days; optional `jitter` applies a symmetric ± uniform integer offset
+to the selected baseline each day, clamped to at least one. The maximum possible
+daily count must fit the window under `random_min_spacing_minutes`; otherwise
+config load fails with a clear error.
+
 `scheduled.items` is optional. These are explicit daily messages delivered at
-the configured local wall-clock time. They do not count toward `random_per_day`,
+the configured local wall-clock time. They do not count toward the random count,
 do not affect `random_min_spacing_minutes`, and can send outside the active window.
 Use `"HH:MM"` times such as `"15:00"`; friendlier inputs such as `"3:00pm"` are
 also accepted.
@@ -84,8 +98,8 @@ also accepted.
 `intervals.items` is optional. These are fixed messages generated at
 `start_hour`, then every `every_minutes` while the local time is before
 `end_hour`. Intervals must be at least 5 minutes because `launchd` runs
-`poke tick` every 5 minutes. Interval messages do not count toward
-`random_per_day`, do not affect `random_min_spacing_minutes`, and stand outside random
+`poke tick` every 5 minutes. Interval messages do not count toward the random
+count, do not affect `random_min_spacing_minutes`, and stand outside random
 rotation and recent-history logic.
 
 `imsg_path` must be absolute. `poke tick` calls:
@@ -146,7 +160,9 @@ launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.$USER.poke.plist
 Behavior
 --------
 
-At the first tick of each local calendar day, `poke` generates `random_per_day`
+At the first tick of each local calendar day, `poke` picks the day's random
+count — the weekday override (or `default`) plus a uniform integer in
+`[-jitter, +jitter]`, clamped to at least one — and generates that many
 random scheduled times inside `[start_hour, end_hour)`. It divides the active
 window into equal segments, picks one random timestamp per segment, and enforces
 `random_min_spacing_minutes`.
@@ -157,9 +173,9 @@ alternative exists, and carries a short recent-send history across day
 boundaries. Within each category, it chooses the least-recently-used message,
 again avoiding immediate repeats when possible.
 
-When `random_per_day` is at least as large as the number of configured random messages,
-`poke` still guarantees that every configured random message appears at least once each
-day before it repeats any of them.
+When the day's random count is at least as large as the number of configured random
+messages, `poke` still guarantees that every configured random message appears at
+least once that day before it repeats any of them.
 
 Explicit `scheduled.items` and `intervals.items` are added to the same pending
 queue for the day, but they stand outside the random rotation and

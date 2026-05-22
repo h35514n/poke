@@ -1,4 +1,4 @@
-use crate::config::{Config, MessageTemplate};
+use crate::config::{Config, MessageTemplate, RandomPerDay};
 use crate::state::{PendingPoke, PokeKind, RecentMessage};
 use anyhow::{Context, bail};
 use chrono::{
@@ -17,11 +17,27 @@ pub fn generate_for_date<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> anyhow::Result<Vec<PendingPoke>> {
     let interval = active_interval(date, config.schedule.start_hour, config.schedule.end_hour)?;
-    let mut pending = generate_in_interval(config, recent_history, date, interval, rng)?;
+    let count = daily_random_count(&config.schedule.random_per_day, date, rng);
+    let mut pending = generate_in_interval(config, recent_history, date, interval, count, rng)?;
     pending.extend(generate_scheduled_for_date(config, date)?);
     pending.extend(generate_interval_for_date(config, date, interval)?);
     pending.sort_by_key(|poke| poke.at);
     Ok(pending)
+}
+
+pub fn daily_random_count<R: Rng + ?Sized>(
+    cfg: &RandomPerDay,
+    date: NaiveDate,
+    rng: &mut R,
+) -> usize {
+    let baseline = cfg.baseline_for(date.weekday()) as i64;
+    let jitter = cfg.jitter as i64;
+    let offset = if jitter == 0 {
+        0
+    } else {
+        rng.gen_range(-jitter..=jitter)
+    };
+    baseline.saturating_add(offset).max(1) as usize
 }
 
 fn generate_in_interval<R: Rng + ?Sized>(
@@ -29,9 +45,9 @@ fn generate_in_interval<R: Rng + ?Sized>(
     recent_history: &[RecentMessage],
     date: NaiveDate,
     interval: ActiveInterval,
+    count: usize,
     rng: &mut R,
 ) -> anyhow::Result<Vec<PendingPoke>> {
-    let count = config.schedule.random_per_day;
     let total_seconds = (interval.end - interval.start).num_seconds();
     let min_spacing = Duration::minutes(config.schedule.random_min_spacing_minutes);
     let required = min_spacing
@@ -376,7 +392,7 @@ mod tests {
             &mut rng,
         )
         .unwrap();
-        assert_eq!(pokes.len(), config.schedule.random_per_day);
+        assert_eq!(pokes.len(), config.schedule.random_per_day.default);
     }
 
     #[test]
@@ -404,7 +420,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             pokes.len(),
-            config.schedule.random_per_day + config.scheduled.items.len()
+            config.schedule.random_per_day.default + config.scheduled.items.len()
         );
         assert_eq!(
             pokes
@@ -420,7 +436,7 @@ mod tests {
         let mut config = default_config();
         config.schedule.start_hour = 9;
         config.schedule.end_hour = 12;
-        config.schedule.random_per_day = 1;
+        config.schedule.random_per_day.default = 1;
         config.intervals.items = vec![IntervalMessage::new(60, "Drink water.", "hydration")];
         let mut rng = StdRng::seed_from_u64(13);
         let pokes = generate_for_date(
@@ -437,7 +453,7 @@ mod tests {
         assert_eq!(interval_pokes.len(), 3);
         assert_eq!(
             pokes.len(),
-            config.schedule.random_per_day + interval_pokes.len()
+            config.schedule.random_per_day.default + interval_pokes.len()
         );
         assert_eq!(interval_pokes[0].at.hour(), 9);
         assert_eq!(interval_pokes[1].at.hour(), 10);
@@ -462,7 +478,7 @@ mod tests {
     #[test]
     fn generated_times_respect_minimum_spacing() {
         let mut config = default_config();
-        config.schedule.random_per_day = 4;
+        config.schedule.random_per_day.default = 4;
         config.schedule.random_min_spacing_minutes = 90;
         let mut rng = StdRng::seed_from_u64(3);
         let pokes = generate_for_date(
@@ -480,7 +496,7 @@ mod tests {
     #[test]
     fn scheduled_messages_do_not_affect_minimum_spacing() {
         let mut config = default_config();
-        config.schedule.random_per_day = 1;
+        config.schedule.random_per_day.default = 1;
         config.schedule.random_min_spacing_minutes = 120;
         config.scheduled.items = vec![
             ScheduledMessage::new(
@@ -516,7 +532,7 @@ mod tests {
         let mut config = default_config();
         config.schedule.start_hour = 9;
         config.schedule.end_hour = 11;
-        config.schedule.random_per_day = 1;
+        config.schedule.random_per_day.default = 1;
         config.intervals.items = vec![IntervalMessage::new(30, "Drink water.", "hydration")];
         let mut rng = StdRng::seed_from_u64(17);
         let pokes = generate_for_date(
@@ -539,7 +555,7 @@ mod tests {
         let mut config = default_config();
         config.schedule.start_hour = 9;
         config.schedule.end_hour = 10;
-        config.schedule.random_per_day = 1;
+        config.schedule.random_per_day.default = 1;
         config.intervals.items = vec![IntervalMessage::new(120, "Drink water.", "hydration")];
         let mut rng = StdRng::seed_from_u64(19);
         let pokes = generate_for_date(
@@ -560,7 +576,7 @@ mod tests {
     #[test]
     fn interval_messages_do_not_affect_minimum_spacing() {
         let mut config = default_config();
-        config.schedule.random_per_day = 1;
+        config.schedule.random_per_day.default = 1;
         config.schedule.random_min_spacing_minutes = 120;
         config.intervals.items = vec![IntervalMessage::new(5, "Drink water.", "hydration")];
         let mut rng = StdRng::seed_from_u64(23);
@@ -580,7 +596,7 @@ mod tests {
         let mut config = default_config();
         config.schedule.start_hour = 9;
         config.schedule.end_hour = 12;
-        config.schedule.random_per_day = 1;
+        config.schedule.random_per_day.default = 1;
         config.scheduled.items = vec![ScheduledMessage::new(
             NaiveTime::from_hms_opt(8, 0, 0).unwrap(),
             "Early fixed.",
@@ -602,7 +618,7 @@ mod tests {
     fn all_random_items_appear_when_random_count_exceeds_item_count() {
         let config = default_config();
         // default: 5 random items, 6 random pokes/day
-        assert!(config.schedule.random_per_day >= config.random.items.len());
+        assert!(config.schedule.random_per_day.default >= config.random.items.len());
         let mut rng = StdRng::seed_from_u64(42);
         let pokes = generate_for_date(
             &config,
@@ -635,7 +651,7 @@ mod tests {
     #[test]
     fn avoids_consecutive_categories_when_alternatives_exist() {
         let mut config = default_config();
-        config.schedule.random_per_day = 6;
+        config.schedule.random_per_day.default = 6;
         config.random.items = vec![
             message("Drink water.", "hydration"),
             message("Stretch.", "movement"),
@@ -666,7 +682,7 @@ mod tests {
     #[test]
     fn avoids_consecutive_random_messages_when_alternatives_exist() {
         let mut config = default_config();
-        config.schedule.random_per_day = 5;
+        config.schedule.random_per_day.default = 5;
         config.random.items = vec![
             message("Drink water.", "default"),
             message("Stretch.", "default"),
@@ -689,7 +705,7 @@ mod tests {
     #[test]
     fn recent_history_biases_the_first_category_of_the_day() {
         let mut config = default_config();
-        config.schedule.random_per_day = 2;
+        config.schedule.random_per_day.default = 2;
         config.random.items = vec![
             message("Drink water.", "hydration"),
             message("Stand up.", "movement"),
@@ -705,5 +721,65 @@ mod tests {
         .unwrap();
 
         assert_eq!(pokes[0].category, "movement");
+    }
+
+    #[test]
+    fn weekday_override_changes_daily_count() {
+        let mut config = default_config();
+        config.schedule.random_per_day.default = 6;
+        config.schedule.random_per_day.weekday.saturday = Some(2);
+
+        // 2026-04-18 is a Saturday; 2026-04-21 is a Tuesday.
+        let saturday = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap();
+        let tuesday = NaiveDate::from_ymd_opt(2026, 4, 21).unwrap();
+
+        let mut rng = StdRng::seed_from_u64(101);
+        let sat_pokes = generate_for_date(&config, &[], saturday, &mut rng).unwrap();
+        let tue_pokes = generate_for_date(&config, &[], tuesday, &mut rng).unwrap();
+
+        let sat_random = sat_pokes
+            .iter()
+            .filter(|p| p.kind == PokeKind::Random)
+            .count();
+        let tue_random = tue_pokes
+            .iter()
+            .filter(|p| p.kind == PokeKind::Random)
+            .count();
+        assert_eq!(sat_random, 2);
+        assert_eq!(tue_random, 6);
+    }
+
+    #[test]
+    fn jitter_produces_count_within_range() {
+        let mut cfg = crate::config::RandomPerDay {
+            default: 6,
+            jitter: 2,
+            weekday: crate::config::WeekdayOverrides::default(),
+        };
+        cfg.weekday.saturday = Some(3);
+        let date = NaiveDate::from_ymd_opt(2026, 4, 21).unwrap(); // Tuesday
+        let sat = NaiveDate::from_ymd_opt(2026, 4, 18).unwrap(); // Saturday
+        for seed in 0..200u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            let n = daily_random_count(&cfg, date, &mut rng);
+            assert!((4..=8).contains(&n), "tuesday count out of range: {n}");
+            let mut rng = StdRng::seed_from_u64(seed);
+            let n = daily_random_count(&cfg, sat, &mut rng);
+            assert!((1..=5).contains(&n), "saturday count out of range: {n}");
+        }
+    }
+
+    #[test]
+    fn zero_jitter_no_override_matches_default() {
+        let cfg = crate::config::RandomPerDay {
+            default: 6,
+            jitter: 0,
+            weekday: crate::config::WeekdayOverrides::default(),
+        };
+        let date = NaiveDate::from_ymd_opt(2026, 4, 21).unwrap();
+        for seed in 0..50u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            assert_eq!(daily_random_count(&cfg, date, &mut rng), 6);
+        }
     }
 }
