@@ -94,7 +94,7 @@ pub fn process_tick<S: Sender>(
         config.schedule.end_hour,
     );
 
-    let Some((due_index, due)) = earliest_due(&state.pending, now, within_active_window) else {
+    let Some((due_index, due)) = latest_due(&state.pending, now, within_active_window) else {
         return Ok(TickOutcome {
             state_changed,
             sent_message: false,
@@ -147,7 +147,7 @@ pub fn regenerate_today(
     Ok(())
 }
 
-fn earliest_due(
+fn latest_due(
     pending: &[PendingPoke],
     now: DateTime<FixedOffset>,
     within_active_window: bool,
@@ -155,6 +155,7 @@ fn earliest_due(
     pending
         .iter()
         .enumerate()
+        .rev()
         .find(|(_, poke)| {
             poke.at <= now
                 && match poke.kind {
@@ -272,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_overdue_sends_one_and_drops_other_missed_after_success() {
+    fn multiple_overdue_sends_latest_and_drops_earlier_missed_after_success() {
         let config = default_config();
         let mut state = State {
             last_schedule_date: Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap()),
@@ -289,7 +290,7 @@ mod tests {
             calls: vec![],
         };
         process_tick(&config, &mut state, dt(10, 0), &mut sender).unwrap();
-        assert_eq!(sender.calls, vec!["message a"]);
+        assert_eq!(sender.calls, vec!["message b"]);
         assert_eq!(state.pending, vec![poke("c", dt(11, 0))]);
         assert_eq!(state.sent.len(), 1);
     }
@@ -492,7 +493,7 @@ mod tests {
     }
 
     #[test]
-    fn earliest_due_still_limits_tick_to_one_message() {
+    fn latest_due_still_limits_tick_to_one_message() {
         let config = default_config();
         let mut state = State {
             last_schedule_date: Some(NaiveDate::from_ymd_opt(2026, 4, 19).unwrap()),
@@ -508,7 +509,7 @@ mod tests {
             calls: vec![],
         };
         process_tick(&config, &mut state, dt(9, 10), &mut sender).unwrap();
-        assert_eq!(sender.calls, vec!["message fixed"]);
+        assert_eq!(sender.calls, vec!["message random"]);
         assert!(state.pending.is_empty());
         assert_eq!(state.sent.len(), 1);
     }

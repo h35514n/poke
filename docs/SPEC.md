@@ -182,14 +182,14 @@ State rules:
 4. Load state or initialize empty state.
 5. Get the current timezone-aware local datetime.
 6. If `last_schedule_date != today`, generate today's schedule, replace `pending`, clear `sent`, and save state.
-7. Find the earliest pending poke with `at <= now`; random and interval pokes are eligible only inside the active window, and scheduled pokes are eligible regardless of active window.
+7. Find the most-recently-scheduled pending poke with `at <= now` (i.e. the latest eligible overdue poke); random and interval pokes are eligible only inside the active window, and scheduled pokes are eligible regardless of active window.
 8. If none exists, exit 0.
 9. Send exactly one message.
 10. On success, move the sent poke to `sent`, drop any other pending pokes with `at <= now`, save state, and exit 0.
 11. On failure, log stdout/stderr/status, preserve `pending`, do not append to `sent`, and exit nonzero.
 
 If the first tick of a day happens after `end_hour`, still generate and persist that day's schedule, then send a due scheduled poke if one exists.
-If multiple interval pokes are overdue, the existing overdue-drop behavior applies: send the earliest eligible poke and drop other overdue pokes after success.
+If multiple pokes are overdue, send the most-recently-scheduled eligible poke (latest `at <= now`) and drop the earlier overdue ones after success.
 
 ## Delivery
 
